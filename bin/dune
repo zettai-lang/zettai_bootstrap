@@ -1,0 +1,4 @@
+(executable
+ (public_name zettai_bootstrap)
+ (name main)
+ (libraries zettai_bootstrap))

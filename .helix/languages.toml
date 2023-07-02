@@ -1,0 +1,9 @@
+[[language]]
+name = "ocaml"
+auto-format = true
+formatter = { command = "ocamlformat", args = ["--impl", "-"] }
+
+[[language]]
+name = "ocaml-interface"
+auto-format = true
+formatter = { command = "ocamlformat", args = ["--intf", "-"] }
