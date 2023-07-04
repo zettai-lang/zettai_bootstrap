@@ -29,7 +29,7 @@
       };
       inherit (pkgs) zettai_bootstrap mkShell ocamlformat ocamlPackages;
       inherit (ocamlPackages) bisect_ppx core dune_3 findlib ocaml ocaml-lsp
-        ppx_deriving ppx_inline_test;
+        ounit2 ppx_assert ppx_deriving ppx_inline_test;
     in
     {
       packages.default = zettai_bootstrap;
@@ -43,6 +43,8 @@
           ocaml
           ocamlformat
           ocaml-lsp
+          ounit2
+          ppx_assert
           ppx_deriving
           ppx_inline_test
         ];

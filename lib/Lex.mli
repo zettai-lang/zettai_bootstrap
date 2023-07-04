@@ -30,4 +30,7 @@ type token =
   | Comma
 [@@deriving show]
 
-val lex : string -> token list
+(* both fields are one-indexed *)
+type pos = { row : int; col : int }
+
+val lex : string -> (token * pos) list

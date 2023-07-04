@@ -1,3 +1,8 @@
+open Ppx_compare_lib.Builtin
+open Sexplib.Std
+
+let assert_raises = OUnit2.assert_raises
+
 type keyword = Brk | Ctn | Else | If | Loop | Pre | Proc | Ret | Val | Var
 [@@deriving show]
 
@@ -30,19 +35,48 @@ type token =
   | Comma
 [@@deriving show]
 
-exception UnexpectedChar of char * int * int
+[@@@coverage off]
 
-let string_tail = function
-  | "" -> ""
-  | non_empty -> String.sub non_empty 1 (String.length non_empty - 1)
+type pos = { row : int; col : int } [@@deriving compare, sexp]
+
+[@@@coverage on]
+
+let pp_pos (f : Format.formatter) (p : pos) =
+  Format.fprintf f "%d:%d" p.row p.col
 
 [@@@coverage off]
 
-let%test _ = string_tail "" = ""
-let%test _ = string_tail "f" = ""
-let%test _ = string_tail "foo" = "oo"
+type state = { text : string; pos : pos } [@@deriving compare, sexp]
 
 [@@@coverage on]
+
+let state_from (text : string) = { text; pos = { row = 1; col = 1 } }
+
+let advanced (s : state) =
+  match s.text with
+  | "" -> None
+  | non_empty ->
+      let head = non_empty.[0] in
+      let tail = String.sub non_empty 1 (String.length non_empty - 1) in
+      let pos =
+        if head = '\n' then { row = s.pos.row + 1; col = 1 }
+        else { row = s.pos.row; col = s.pos.col + 1 }
+      in
+      Some (head, { text = tail; pos })
+
+let with_advanced_or (s : state) (default : 'a) (f : char -> state -> 'a) =
+  match advanced s with
+  | None -> default
+  | Some (head, advanced) -> f head advanced
+
+let advanced_or_raise (s : state) (make_exn : pos -> exn) =
+  match advanced s with
+  | None -> make_exn s.pos |> raise
+  | Some (head, advanced) -> (head, advanced)
+
+let expect_char (s : state) (expected : char) (make_exn : pos -> exn) =
+  let head, advanced = advanced_or_raise s make_exn in
+  if head != expected then make_exn s.pos |> raise else advanced
 
 let prepend_char (c : char) (s : string) = Core.Char.to_string c ^ s
 let is_alpha (c : char) = ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
@@ -50,23 +84,34 @@ let is_digit (c : char) = '0' <= c && c <= '9'
 let is_ident_start (c : char) = is_alpha c || c = '_'
 let is_ident_rest (c : char) = is_alpha c || is_digit c || c = '_'
 
-let rec lex_ident_rest = function
-  | "" -> ("", "")
-  | non_empty -> (
-      match non_empty.[0] with
-      | ident_char when is_ident_rest ident_char ->
-          let ident_rest, text_rest = string_tail non_empty |> lex_ident_rest in
-          let ident = prepend_char ident_char ident_rest in
-          (ident, text_rest)
-      | _ -> ("", non_empty))
+let rec lex_ident_rest (s : state) =
+  with_advanced_or s ("", s) (fun next advanced ->
+      if is_ident_rest next then
+        let ident_rest, remaining = lex_ident_rest advanced in
+        let ident = prepend_char next ident_rest in
+        (ident, remaining)
+      else ("", s))
 
 [@@@coverage off]
 
-let%test _ = lex_ident_rest "_foo651 ***" = ("_foo651", " ***")
-let%test _ = lex_ident_rest "651***" = ("651", "***")
-let%test _ = lex_ident_rest "" = ("", "")
+type string_state_tuple = string * state [@@deriving compare, sexp]
 
 [@@@coverage on]
+
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "_foo651 ***" |> lex_ident_rest)
+    ~expect:("_foo651", { text = " ***"; pos = { row = 1; col = 8 } })
+
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "651***" |> lex_ident_rest)
+    ~expect:("651", { text = "***"; pos = { row = 1; col = 4 } })
+
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "" |> lex_ident_rest)
+    ~expect:("", { text = ""; pos = { row = 1; col = 1 } })
 
 let ident_or_keywd_of = function
   | "brk" -> Keywd Brk
@@ -81,407 +126,338 @@ let ident_or_keywd_of = function
   | "var" -> Keywd Var
   | non_keywd -> Ident non_keywd
 
-exception InvalidEscapeSequence of char
-exception UnterminatedEscapeSequence
+exception InvalidEscapeSequence of char * pos
+exception UnterminatedEscapeSequence of pos
 
-let lex_escape_rest (extras : char list) = function
-  | "" -> raise UnterminatedEscapeSequence
-  | non_empty -> (
-      let tail = string_tail non_empty in
-      match non_empty.[0] with
-      | 'n' -> ('\n', tail)
-      | 'r' -> ('\r', tail)
-      | 't' -> ('\t', tail)
-      | '0' -> (char_of_int 0, tail)
-      | '\\' -> ('\\', tail)
-      | extra when List.exists (( = ) extra) extras -> (extra, tail)
-      | invalid -> InvalidEscapeSequence invalid |> raise)
+let lex_escape_rest (extras : char list) (s : state) =
+  let head, advanced =
+    advanced_or_raise s (fun p -> UnterminatedEscapeSequence p)
+  in
+  let escape_char =
+    match head with
+    | 'n' -> '\n'
+    | 'r' -> '\r'
+    | 't' -> '\t'
+    | '0' -> char_of_int 0
+    | '\\' -> '\\'
+    | extra when List.exists (( = ) extra) extras -> extra
+    | invalid -> raise (InvalidEscapeSequence (invalid, s.pos))
+  in
+  (escape_char, advanced)
 
 let lex_char_escape_rest = lex_escape_rest [ '\\'; '\'' ]
 let lex_string_escape_rest = lex_escape_rest [ '\\'; '"' ]
 
 [@@@coverage off]
 
-let%test _ = lex_char_escape_rest "n" = ('\n', "")
-let%test _ = lex_char_escape_rest "r " = ('\r', " ")
-let%test _ = lex_char_escape_rest "to" = ('\t', "o")
-let%test _ = lex_char_escape_rest "0*" = (char_of_int 0, "*")
-let%test _ = lex_char_escape_rest "\\'" = ('\\', "'")
-let%test _ = lex_char_escape_rest "''" = ('\'', "'")
-let%test _ = lex_string_escape_rest "\"'" = ('"', "'")
-
-let%test _ =
-  try
-    let _ = lex_char_escape_rest "" in
-    false
-  with UnterminatedEscapeSequence -> true
-
-let%test _ =
-  try
-    let _ = lex_char_escape_rest "\"" in
-    false
-  with InvalidEscapeSequence '"' -> true
-
-let%test _ =
-  try
-    let _ = lex_string_escape_rest "'" in
-    false
-  with InvalidEscapeSequence '\'' -> true
+type char_state_tuple = char * state [@@deriving compare, sexp]
 
 [@@@coverage on]
 
-exception UnterminatedString
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "n" |> lex_char_escape_rest)
+    ~expect:('\n', { text = ""; pos = { row = 1; col = 2 } })
 
-let rec lex_string_rest = function
-  | "" -> raise UnterminatedString
-  | non_empty -> (
-      match non_empty.[0] with
-      | '"' -> ("", string_tail non_empty)
-      | '\\' ->
-          let escape_char, text_rest =
-            string_tail non_empty |> lex_string_escape_rest
-          in
-          let string_rest, text_rest = lex_string_rest text_rest in
-          (prepend_char escape_char string_rest, text_rest)
-      | other ->
-          let string_rest, text_rest =
-            string_tail non_empty |> lex_string_rest
-          in
-          (prepend_char other string_rest, text_rest))
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "r " |> lex_char_escape_rest)
+    ~expect:('\r', { text = " "; pos = { row = 1; col = 2 } })
 
-[@@@coverage off]
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "to" |> lex_char_escape_rest)
+    ~expect:('\t', { text = "o"; pos = { row = 1; col = 2 } })
 
-let%test _ = lex_string_rest "foo\" bar" = ("foo", " bar")
-let%test _ = lex_string_rest "foo\\n\" bar" = ("foo\n", " bar")
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "0*" |> lex_char_escape_rest)
+    ~expect:(char_of_int 0, { text = "*"; pos = { row = 1; col = 2 } })
 
-let%test _ =
-  try
-    let _ = lex_string_rest "\\q" in
-    false
-  with InvalidEscapeSequence 'q' -> true
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "\\'" |> lex_char_escape_rest)
+    ~expect:('\\', { text = "'"; pos = { row = 1; col = 2 } })
 
-let%test _ =
-  try
-    let _ = lex_string_rest "" in
-    false
-  with UnterminatedString -> true
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "''" |> lex_char_escape_rest)
+    ~expect:('\'', { text = "'"; pos = { row = 1; col = 2 } })
 
-let%test _ =
-  try
-    let _ = lex_string_rest "foo" in
-    false
-  with UnterminatedString -> true
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "\"'" |> lex_string_escape_rest)
+    ~expect:('"', { text = "'"; pos = { row = 1; col = 2 } })
 
-[@@@coverage on]
+let%test_unit _ =
+  let f () = state_from "" |> lex_char_escape_rest in
+  assert_raises (UnterminatedEscapeSequence { row = 1; col = 1 }) f
 
-exception UnterminatedRune
-exception EmptyRune
+let%test_unit _ =
+  let f () = state_from "\"" |> lex_char_escape_rest in
+  assert_raises (InvalidEscapeSequence ('"', { row = 1; col = 1 })) f
 
-let lex_rune_rest = function
-  | "" -> raise UnterminatedRune
-  | non_empty -> (
-      match non_empty.[0] with
-      | '\'' -> raise EmptyRune
-      | '\\' -> (
-          let escape_char, text_rest =
-            string_tail non_empty |> lex_char_escape_rest
-          in
-          match text_rest with
-          | "" -> raise UnterminatedRune
-          | non_empty -> (
-              match non_empty.[0] with
-              | '\'' -> (escape_char, string_tail text_rest)
-              | _ -> raise UnterminatedRune))
-      | rune_contents -> (
-          let after_rune_char = string_tail non_empty in
-          match after_rune_char with
-          | "" -> raise UnterminatedRune
-          | non_empty -> (
-              match non_empty.[0] with
-              | '\'' -> (rune_contents, string_tail non_empty)
-              | _ -> raise UnterminatedRune)))
+let%test_unit _ =
+  let f () = state_from "'" |> lex_string_escape_rest in
+  assert_raises (InvalidEscapeSequence ('\'', { row = 1; col = 1 })) f
 
-[@@@coverage off]
+exception UnterminatedString of pos
 
-let%test _ = lex_rune_rest " 'foo" = (' ', "foo")
-let%test _ = lex_rune_rest "f''''" = ('f', "'''")
-let%test _ = lex_rune_rest "\\n' " = ('\n', " ")
+let rec lex_string_rest (s : state) =
+  let head, advanced = advanced_or_raise s (fun p -> UnterminatedString p) in
+  match head with
+  | '"' -> ("", advanced)
+  | other ->
+      let unescaped, after_escape =
+        if other = '\\' then lex_string_escape_rest advanced
+        else (other, advanced)
+      in
+      let string_rest, remaining = lex_string_rest after_escape in
+      (prepend_char unescaped string_rest, remaining)
 
-let%test _ =
-  try
-    let _ = lex_rune_rest "" in
-    false
-  with UnterminatedRune -> true
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "foo\" bar" |> lex_string_rest)
+    ~expect:("foo", { text = " bar"; pos = { row = 1; col = 5 } })
 
-let%test _ =
-  try
-    let _ = lex_rune_rest "'" in
-    false
-  with EmptyRune -> true
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "foo\\n\" bar" |> lex_string_rest)
+    ~expect:("foo\n", { text = " bar"; pos = { row = 1; col = 7 } })
 
-let%test _ =
-  try
-    let _ = lex_rune_rest "\\q" in
-    false
-  with InvalidEscapeSequence 'q' -> true
+let%test_unit _ =
+  let f () = state_from "\\q" |> lex_string_rest in
+  assert_raises (InvalidEscapeSequence ('q', { row = 1; col = 2 })) f
 
-let%test _ =
-  try
-    let _ = lex_rune_rest "\\n" in
-    false
-  with UnterminatedRune -> true
+let%test_unit _ =
+  let f () = state_from "" |> lex_string_rest in
+  assert_raises (UnterminatedString { row = 1; col = 1 }) f
 
-let%test _ =
-  try
-    let _ = lex_rune_rest "\\nf" in
-    false
-  with UnterminatedRune -> true
+let%test_unit _ =
+  let f () = state_from "foo" |> lex_string_rest in
+  assert_raises (UnterminatedString { row = 1; col = 4 }) f
 
-let%test _ =
-  try
-    let _ = lex_rune_rest "f" in
-    false
-  with UnterminatedRune -> true
+exception UnterminatedRune of pos
+exception EmptyRune of pos
 
-let%test _ =
-  try
-    let _ = lex_rune_rest "ff'" in
-    false
-  with UnterminatedRune -> true
+let lex_rune_rest (s : state) =
+  let head, advanced = advanced_or_raise s (fun p -> UnterminatedRune p) in
+  match head with
+  | '\'' -> EmptyRune s.pos |> raise
+  | rune_char ->
+      let unescaped, after_escape =
+        if rune_char = '\\' then lex_char_escape_rest advanced
+        else (rune_char, advanced)
+      in
+      let after_close =
+        expect_char after_escape '\'' (fun p -> UnterminatedRune p)
+      in
+      (unescaped, after_close)
 
-[@@@coverage on]
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from " 'foo" |> lex_rune_rest)
+    ~expect:(' ', { text = "foo"; pos = { row = 1; col = 3 } })
 
-exception UnterminatedAnd
-exception UnterminatedOr
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "f''''" |> lex_rune_rest)
+    ~expect:('f', { text = "'''"; pos = { row = 1; col = 3 } })
 
-let rec lex = function
-  | "" -> []
-  | non_empty -> (
-      match non_empty.[0] with
-      | ' ' | '\t' | '\n' -> string_tail non_empty |> lex
+let%test_unit _ =
+  [%test_result: char_state_tuple]
+    (state_from "\\n' " |> lex_rune_rest)
+    ~expect:('\n', { text = " "; pos = { row = 1; col = 4 } })
+
+let%test_unit _ =
+  let f () = state_from "" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { col = 1; row = 1 }) f
+
+let%test_unit _ =
+  let f () = state_from "'" |> lex_rune_rest in
+  assert_raises (EmptyRune { col = 1; row = 1 }) f
+
+let%test_unit _ =
+  let f () = state_from "\\q" |> lex_rune_rest in
+  assert_raises (InvalidEscapeSequence ('q', { row = 1; col = 2 })) f
+
+let%test_unit _ =
+  let f () = state_from "\\n" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { row = 1; col = 3 }) f
+
+let%test_unit _ =
+  let f () = state_from "\\nf" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { row = 1; col = 3 }) f
+
+let%test_unit _ =
+  let f () = state_from "f" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { row = 1; col = 2 }) f
+
+let%test_unit _ =
+  let f () = state_from "ff'" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { row = 1; col = 2 }) f
+
+exception UnexpectedChar of char * pos
+exception UnterminatedAnd of pos
+exception UnterminatedOr of pos
+
+let rec lex' (s : state) =
+  with_advanced_or s [] (fun head advanced ->
+      match head with
+      | ' ' | '\t' | '\n' -> lex' advanced
       | ident_start when is_ident_start ident_start ->
-          let ident_rest, text_rest = string_tail non_empty |> lex_ident_rest in
+          let ident_rest, after_ident = lex_ident_rest advanced in
           let ident = prepend_char ident_start ident_rest in
-          [ ident_or_keywd_of ident ] @ lex text_rest
+          [ (ident_or_keywd_of ident, s.pos) ] @ lex' after_ident
       | '"' ->
-          let string, text_rest = string_tail non_empty |> lex_string_rest in
-          [ String string ] @ lex text_rest
+          let string, after_string = lex_string_rest advanced in
+          [ (String string, s.pos) ] @ lex' after_string
       | '\'' ->
-          let rune, text_rest = string_tail non_empty |> lex_rune_rest in
-          [ Rune rune ] @ lex text_rest
-      | '=' -> (
-          let after_first_eq = string_tail non_empty in
-          match after_first_eq with
-          | "" -> [ Assign ]
-          | non_empty -> (
-              match non_empty.[0] with
-              | '=' -> [ Eq ] @ lex (string_tail non_empty)
-              | _ -> [ Assign ] @ lex non_empty))
-      | '+' -> [ Plus ] @ lex (string_tail non_empty)
-      | '-' -> [ Mins ] @ lex (string_tail non_empty)
-      | '*' -> [ Astr ] @ lex (string_tail non_empty)
-      | '/' -> [ Slsh ] @ lex (string_tail non_empty)
-      | '%' -> [ Perc ] @ lex (string_tail non_empty)
-      | '&' -> (
-          let after_first_and = string_tail non_empty in
-          match after_first_and with
-          | "" -> raise UnterminatedAnd
-          | non_empty -> (
-              match non_empty.[0] with
-              | '&' -> [ And ] @ lex (string_tail non_empty)
-              | u -> UnexpectedChar (u, 0, 0) |> raise))
-      | '|' -> (
-          let after_first_or = string_tail non_empty in
-          match after_first_or with
-          | "" -> raise UnterminatedOr
-          | non_empty -> (
-              match non_empty.[0] with
-              | '|' -> [ Or ] @ lex (string_tail non_empty)
-              | u -> UnexpectedChar (u, 0, 0) |> raise))
-      | '!' -> (
-          let after_not = string_tail non_empty in
-          match after_not with
-          | "" -> [ Not ]
-          | non_empty -> (
-              match non_empty.[0] with
-              | '=' -> [ Ne ] @ lex (string_tail non_empty)
-              | _ -> [ Not ] @ lex non_empty))
-      | '<' -> (
-          let after_less = string_tail non_empty in
-          match after_less with
-          | "" -> [ Lt ]
-          | non_empty -> (
-              match non_empty.[0] with
-              | '=' -> [ Le ] @ lex (string_tail non_empty)
-              | _ -> [ Lt ] @ lex non_empty))
-      | '(' -> [ OpenParen ] @ lex (string_tail non_empty)
-      | ')' -> [ CloseParen ] @ lex (string_tail non_empty)
-      | '[' -> [ OpenSquareBrkt ] @ lex (string_tail non_empty)
-      | ']' -> [ CloseSquareBrkt ] @ lex (string_tail non_empty)
-      | '{' -> [ OpenCurlyBrkt ] @ lex (string_tail non_empty)
-      | '}' -> [ CloseCurlyBrkt ] @ lex (string_tail non_empty)
-      | ':' -> [ Colon ] @ lex (string_tail non_empty)
-      | '.' -> [ Dot ] @ lex (string_tail non_empty)
-      | ',' -> [ Comma ] @ lex (string_tail non_empty)
-      | u -> UnexpectedChar (u, 0, 0) |> raise)
+          let rune, after_rune = lex_rune_rest advanced in
+          [ (Rune rune, s.pos) ] @ lex' after_rune
+      | '=' ->
+          with_advanced_or advanced
+            [ (Assign, s.pos) ]
+            (fun head remaining ->
+              if head = '=' then [ (Eq, s.pos) ] @ lex' remaining
+              else [ (Assign, s.pos) ] @ lex' advanced)
+      | '+' -> [ (Plus, s.pos) ] @ lex' advanced
+      | '-' -> [ (Mins, s.pos) ] @ lex' advanced
+      | '*' -> [ (Astr, s.pos) ] @ lex' advanced
+      | '/' -> [ (Slsh, s.pos) ] @ lex' advanced
+      | '%' -> [ (Perc, s.pos) ] @ lex' advanced
+      | '&' ->
+          [ (And, s.pos) ]
+          @ lex' (expect_char advanced '&' (fun p -> UnterminatedAnd p))
+      | '|' ->
+          [ (Or, s.pos) ]
+          @ lex' (expect_char advanced '|' (fun p -> UnterminatedOr p))
+      | '!' ->
+          with_advanced_or advanced
+            [ (Not, s.pos) ]
+            (fun head remaining ->
+              if head = '=' then [ (Ne, s.pos) ] @ lex' remaining
+              else [ (Not, s.pos) ] @ lex' advanced)
+      | '<' ->
+          with_advanced_or advanced
+            [ (Lt, s.pos) ]
+            (fun head remaining ->
+              if head = '=' then [ (Le, s.pos) ] @ lex' remaining
+              else [ (Lt, s.pos) ] @ lex' advanced)
+      | '(' -> [ (OpenParen, s.pos) ] @ lex' advanced
+      | ')' -> [ (CloseParen, s.pos) ] @ lex' advanced
+      | '[' -> [ (OpenSquareBrkt, s.pos) ] @ lex' advanced
+      | ']' -> [ (CloseSquareBrkt, s.pos) ] @ lex' advanced
+      | '{' -> [ (OpenCurlyBrkt, s.pos) ] @ lex' advanced
+      | '}' -> [ (CloseCurlyBrkt, s.pos) ] @ lex' advanced
+      | ':' -> [ (Colon, s.pos) ] @ lex' advanced
+      | '.' -> [ (Dot, s.pos) ] @ lex' advanced
+      | ',' -> [ (Comma, s.pos) ] @ lex' advanced
+      | u -> UnexpectedChar (u, s.pos) |> raise)
 
-let print_lex (text : string) =
-  lex text |> List.map show_token |> String.concat "\n" |> print_endline
+let lex (text : string) = state_from text |> lex'
 
-[@@@coverage off]
+type lex_result = (token * pos) list [@@deriving show]
 
-(* ident *)
 let%expect_test _ =
-  print_lex "_foo\t_13651\nBar_651 Iljbzlskmvk";
+  lex "_foo\t_13651\nBar_651 Iljbzlskmvk" |> show_lex_result |> print_endline;
   [%expect
     {|
-    (Lex.Ident "_foo")
-    (Lex.Ident "_13651")
-    (Lex.Ident "Bar_651")
-    (Lex.Ident "Iljbzlskmvk")
-  |}]
+      [((Lex.Ident "_foo"), 1:1); ((Lex.Ident "_13651"), 1:6);
+        ((Lex.Ident "Bar_651"), 2:1); ((Lex.Ident "Iljbzlskmvk"), 2:9)]
+    |}]
 
-(* keyword *)
 let%expect_test _ =
-  print_lex "brk ctn else if loop pre proc ret val var";
+  lex "brk ctn else if loop pre proc ret val var"
+  |> show_lex_result |> print_endline;
   [%expect
     {|
-    (Lex.Keywd Lex.Brk)
-    (Lex.Keywd Lex.Ctn)
-    (Lex.Keywd Lex.Else)
-    (Lex.Keywd Lex.If)
-    (Lex.Keywd Lex.Loop)
-    (Lex.Keywd Lex.Pre)
-    (Lex.Keywd Lex.Proc)
-    (Lex.Keywd Lex.Ret)
-    (Lex.Keywd Lex.Val)
-    (Lex.Keywd Lex.Var)
-  |}]
+      [((Lex.Keywd Lex.Brk), 1:1); ((Lex.Keywd Lex.Ctn), 1:5);
+        ((Lex.Keywd Lex.Else), 1:9); ((Lex.Keywd Lex.If), 1:14);
+        ((Lex.Keywd Lex.Loop), 1:17); ((Lex.Keywd Lex.Pre), 1:22);
+        ((Lex.Keywd Lex.Proc), 1:26); ((Lex.Keywd Lex.Ret), 1:31);
+        ((Lex.Keywd Lex.Val), 1:35); ((Lex.Keywd Lex.Var), 1:39)]
+    |}]
 
-(* string *)
 let%expect_test _ =
-  print_lex "\"foo\" \"bar\\n\"";
-  [%expect {|
-    (Lex.String "foo")
-    (Lex.String "bar\n")
-  |}]
-
-(* rune *)
-let%expect_test _ =
-  print_lex "'f' '\\n' '\\\\' ";
-  [%expect {|
-    (Lex.Rune 'f')
-    (Lex.Rune '\n')
-    (Lex.Rune '\\')
-  |}]
-
-(* assign *)
-let%expect_test _ =
-  print_lex "= =a =";
+  lex "\"foo\" \"bar\\n\"" |> show_lex_result |> print_endline;
   [%expect
     {|
-    Lex.Assign
-    Lex.Assign
-    (Lex.Ident "a")
-    Lex.Assign
-  |}]
+      [((Lex.String "foo"), 1:1); ((Lex.String "bar\n"), 1:7)]
+    |}]
 
-(* arithmetic *)
 let%expect_test _ =
-  print_lex "+ - * / % ++ -- *=";
+  lex "'f' '\\n' '\\\\' " |> show_lex_result |> print_endline;
   [%expect
     {|
-    Lex.Plus
-    Lex.Mins
-    Lex.Astr
-    Lex.Slsh
-    Lex.Perc
-    Lex.Plus
-    Lex.Plus
-    Lex.Mins
-    Lex.Mins
-    Lex.Astr
-    Lex.Assign
-  |}]
+      [((Lex.Rune 'f'), 1:1); ((Lex.Rune '\n'), 1:5); ((Lex.Rune '\\'), 1:10)]
+    |}]
 
-(* boolean *)
 let%expect_test _ =
-  print_lex "&& || ! !";
-  [%expect {|
-    Lex.And
-    Lex.Or
-    Lex.Not
-    Lex.Not
-  |}]
-
-let%test _ =
-  try
-    let _ = lex "&" in
-    false
-  with UnterminatedAnd -> true
-
-let%test _ =
-  try
-    let _ = lex "& " in
-    false
-  with UnexpectedChar (' ', 0, 0) -> true
-
-let%test _ =
-  try
-    let _ = lex "|" in
-    false
-  with UnterminatedOr -> true
-
-let%test _ =
-  try
-    let _ = lex "| " in
-    false
-  with UnexpectedChar (' ', 0, 0) -> true
-
-(* comparison *)
-let%expect_test _ =
-  print_lex "== != <= < <";
-  [%expect {|
-    Lex.Eq
-    Lex.Ne
-    Lex.Le
-    Lex.Lt
-    Lex.Lt
-  |}]
-
-(* open/close *)
-let%expect_test _ =
-  print_lex "() [] {} ( [ { ) ] }";
+  lex "= =a =" |> show_lex_result |> print_endline;
   [%expect
     {|
-    Lex.OpenParen
-    Lex.CloseParen
-    Lex.OpenSquareBrkt
-    Lex.CloseSquareBrkt
-    Lex.OpenCurlyBrkt
-    Lex.CloseCurlyBrkt
-    Lex.OpenParen
-    Lex.OpenSquareBrkt
-    Lex.OpenCurlyBrkt
-    Lex.CloseParen
-    Lex.CloseSquareBrkt
-    Lex.CloseCurlyBrkt
-  |}]
+      [(Lex.Assign, 1:1); (Lex.Assign, 1:3); ((Lex.Ident "a"), 1:4);
+        (Lex.Assign, 1:6)]
+    |}]
 
-(* punctuation *)
 let%expect_test _ =
-  print_lex ": . ,";
+  lex "+ - * / % ++ -- *=" |> show_lex_result |> print_endline;
+  [%expect
+    {|
+      [(Lex.Plus, 1:1); (Lex.Mins, 1:3); (Lex.Astr, 1:5); (Lex.Slsh, 1:7);
+        (Lex.Perc, 1:9); (Lex.Plus, 1:11); (Lex.Plus, 1:12); (Lex.Mins, 1:14);
+        (Lex.Mins, 1:15); (Lex.Astr, 1:17); (Lex.Assign, 1:18)]
+    |}]
+
+let%expect_test _ =
+  lex "&& || ! !" |> show_lex_result |> print_endline;
+  [%expect
+    {|
+      [(Lex.And, 1:1); (Lex.Or, 1:4); (Lex.Not, 1:7); (Lex.Not, 1:9)]
+    |}]
+
+let%test_unit _ =
+  let f () = lex "&" in
+  assert_raises (UnterminatedAnd { row = 1; col = 2 }) f
+
+let%test_unit _ =
+  let f () = lex "& " in
+  assert_raises (UnterminatedAnd { row = 1; col = 2 }) f
+
+let%test_unit _ =
+  let f () = lex "|" in
+  assert_raises (UnterminatedOr { row = 1; col = 2 }) f
+
+let%test_unit _ =
+  let f () = lex "| " in
+  assert_raises (UnterminatedOr { row = 1; col = 2 }) f
+
+let%expect_test _ =
+  lex "== != <= < <" |> show_lex_result |> print_endline;
+  [%expect
+    {|
+      [(Lex.Eq, 1:1); (Lex.Ne, 1:4); (Lex.Le, 1:7); (Lex.Lt, 1:10); (Lex.Lt, 1:12)]
+    |}]
+
+let%expect_test _ =
+  lex "() [] {} ( [ { ) ] }" |> show_lex_result |> print_endline;
+  [%expect
+    {|
+      [(Lex.OpenParen, 1:1); (Lex.CloseParen, 1:2); (Lex.OpenSquareBrkt, 1:4);
+        (Lex.CloseSquareBrkt, 1:5); (Lex.OpenCurlyBrkt, 1:7);
+        (Lex.CloseCurlyBrkt, 1:8); (Lex.OpenParen, 1:10);
+        (Lex.OpenSquareBrkt, 1:12); (Lex.OpenCurlyBrkt, 1:14);
+        (Lex.CloseParen, 1:16); (Lex.CloseSquareBrkt, 1:18);
+        (Lex.CloseCurlyBrkt, 1:20)]
+    |}]
+
+let%expect_test _ =
+  lex ": . ," |> show_lex_result |> print_endline;
   [%expect {|
-    Lex.Colon
-    Lex.Dot
-    Lex.Comma
-  |}]
+      [(Lex.Colon, 1:1); (Lex.Dot, 1:3); (Lex.Comma, 1:5)]
+    |}]
 
-(* unexpected *)
-let%test _ =
-  try
-    let _ = lex "$ " in
-    false
-  with UnexpectedChar ('$', 0, 0) -> true
-
-[@@@coverage on]
+let%test_unit _ =
+  let f () = lex "$ " in
+  assert_raises (UnexpectedChar ('$', { col = 1; row = 1 })) f
