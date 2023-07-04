@@ -32,7 +32,7 @@ type token =
   | Comma
 [@@deriving show]
 
-(* both fields are one-indexed *)
 type pos = { row : int; col : int }
+type lex_result = { tokens : (token * pos) list; end_pos : pos }
 
-val lex : string -> (token * pos) list
+val lex : string -> lex_result

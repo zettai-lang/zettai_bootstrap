@@ -43,8 +43,7 @@ type pos = { row : int; col : int } [@@deriving compare, sexp]
 
 [@@@coverage on]
 
-let pp_pos (f : Format.formatter) (p : pos) =
-  Format.fprintf f "%d:%d" p.row p.col
+let pp_pos f p = Format.fprintf f "%d:%d" p.row p.col
 
 [@@@coverage off]
 
@@ -52,9 +51,9 @@ type state = { text : string; pos : pos } [@@deriving compare, sexp]
 
 [@@@coverage on]
 
-let state_from (text : string) = { text; pos = { row = 1; col = 1 } }
+let state_from text = { text; pos = { row = 1; col = 1 } }
 
-let advanced (s : state) =
+let advanced s =
   match s.text with
   | "" -> None
   | non_empty ->
@@ -66,27 +65,27 @@ let advanced (s : state) =
       in
       Some (head, { text = tail; pos })
 
-let with_advanced_or (s : state) (default : 'a) (f : char -> state -> 'a) =
+let with_advanced_or s default f =
   match advanced s with
   | None -> default
   | Some (head, advanced) -> f head advanced
 
-let advanced_or_raise (s : state) (make_exn : pos -> exn) =
+let advanced_or_raise s make_exn =
   match advanced s with
-  | None -> make_exn s.pos |> raise
+  | None -> raise (make_exn s.pos)
   | Some (head, advanced) -> (head, advanced)
 
-let expect_char (s : state) (expected : char) (make_exn : pos -> exn) =
+let expect_char s expected make_exn =
   let head, advanced = advanced_or_raise s make_exn in
-  if head != expected then make_exn s.pos |> raise else advanced
+  if head != expected then raise (make_exn s.pos) else advanced
 
-let prepend_char (c : char) (s : string) = Core.Char.to_string c ^ s
-let is_alpha (c : char) = ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
-let is_digit (c : char) = '0' <= c && c <= '9'
-let is_ident_start (c : char) = is_alpha c || c = '_'
-let is_ident_rest (c : char) = is_alpha c || is_digit c || c = '_'
+let prepend_char c s = Core.Char.to_string c ^ s
+let is_alpha c = ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
+let is_digit c = '0' <= c && c <= '9'
+let is_ident_start c = is_alpha c || c = '_'
+let is_ident_rest c = is_alpha c || is_digit c || c = '_'
 
-let rec lex_ident_rest (s : state) =
+let rec lex_ident_rest s =
   with_advanced_or s ("", s) (fun next advanced ->
       if is_ident_rest next then
         let ident_rest, remaining = lex_ident_rest advanced in
@@ -115,7 +114,7 @@ let%test_unit _ =
     (state_from "" |> lex_ident_rest)
     ~expect:("", { text = ""; pos = { row = 1; col = 1 } })
 
-let rec lex_num_rest (s : state) =
+let rec lex_num_rest s =
   with_advanced_or s ("", s) (fun head advanced ->
       if is_digit head then
         let num_rest, after_num = lex_num_rest advanced in
@@ -156,7 +155,7 @@ let ident_keywd_or_bool_of = function
 exception InvalidEscapeSequence of char * pos
 exception UnterminatedEscapeSequence of pos
 
-let lex_escape_rest (extras : char list) (s : state) =
+let lex_escape_rest extras s =
   let head, advanced =
     advanced_or_raise s (fun p -> UnterminatedEscapeSequence p)
   in
@@ -230,7 +229,7 @@ let%test_unit _ =
 
 exception UnterminatedString of pos
 
-let rec lex_string_rest (s : state) =
+let rec lex_string_rest s =
   let head, advanced = advanced_or_raise s (fun p -> UnterminatedString p) in
   match head with
   | '"' -> ("", advanced)
@@ -267,10 +266,10 @@ let%test_unit _ =
 exception UnterminatedRune of pos
 exception EmptyRune of pos
 
-let lex_rune_rest (s : state) =
+let lex_rune_rest s =
   let head, advanced = advanced_or_raise s (fun p -> UnterminatedRune p) in
   match head with
-  | '\'' -> EmptyRune s.pos |> raise
+  | '\'' -> raise (EmptyRune s.pos)
   | rune_char ->
       let unescaped, after_escape =
         if rune_char = '\\' then lex_char_escape_rest advanced
@@ -328,82 +327,91 @@ exception UnexpectedChar of char * pos
 exception UnterminatedAnd of pos
 exception UnterminatedOr of pos
 
-let rec lex' (s : state) =
-  with_advanced_or s [] (fun head advanced ->
-      match head with
-      | ' ' | '\t' | '\n' -> lex' advanced
-      | ident_start when is_ident_start ident_start ->
-          let ident_rest, after_ident = lex_ident_rest advanced in
-          let ident = prepend_char ident_start ident_rest in
-          [ (ident_keywd_or_bool_of ident, s.pos) ] @ lex' after_ident
-      | num_start when is_digit num_start ->
-          let num_rest, after_num = lex_num_rest advanced in
-          let num = prepend_char num_start num_rest |> int_of_string in
-          [ (Num num, s.pos) ] @ lex' after_num
-      | '"' ->
-          let string, after_string = lex_string_rest advanced in
-          [ (String string, s.pos) ] @ lex' after_string
-      | '\'' ->
-          let rune, after_rune = lex_rune_rest advanced in
-          [ (Rune rune, s.pos) ] @ lex' after_rune
-      | '=' ->
-          with_advanced_or advanced
-            [ (Assign, s.pos) ]
-            (fun head remaining ->
-              if head = '=' then [ (Eq, s.pos) ] @ lex' remaining
-              else [ (Assign, s.pos) ] @ lex' advanced)
-      | '+' -> [ (Plus, s.pos) ] @ lex' advanced
-      | '-' -> [ (Mins, s.pos) ] @ lex' advanced
-      | '*' -> [ (Astr, s.pos) ] @ lex' advanced
-      | '/' -> [ (Slsh, s.pos) ] @ lex' advanced
-      | '%' -> [ (Perc, s.pos) ] @ lex' advanced
-      | '&' ->
-          [ (And, s.pos) ]
-          @ lex' (expect_char advanced '&' (fun p -> UnterminatedAnd p))
-      | '|' ->
-          [ (Or, s.pos) ]
-          @ lex' (expect_char advanced '|' (fun p -> UnterminatedOr p))
-      | '!' ->
-          with_advanced_or advanced
-            [ (Not, s.pos) ]
-            (fun head remaining ->
-              if head = '=' then [ (Ne, s.pos) ] @ lex' remaining
-              else [ (Not, s.pos) ] @ lex' advanced)
-      | '<' ->
-          with_advanced_or advanced
-            [ (Lt, s.pos) ]
-            (fun head remaining ->
-              if head = '=' then [ (Le, s.pos) ] @ lex' remaining
-              else [ (Lt, s.pos) ] @ lex' advanced)
-      | '(' -> [ (OpenParen, s.pos) ] @ lex' advanced
-      | ')' -> [ (CloseParen, s.pos) ] @ lex' advanced
-      | '[' -> [ (OpenSquareBrkt, s.pos) ] @ lex' advanced
-      | ']' -> [ (CloseSquareBrkt, s.pos) ] @ lex' advanced
-      | '{' -> [ (OpenCurlyBrkt, s.pos) ] @ lex' advanced
-      | '}' -> [ (CloseCurlyBrkt, s.pos) ] @ lex' advanced
-      | ':' -> [ (Colon, s.pos) ] @ lex' advanced
-      | '.' -> [ (Dot, s.pos) ] @ lex' advanced
-      | ',' -> [ (Comma, s.pos) ] @ lex' advanced
-      | u -> UnexpectedChar (u, s.pos) |> raise)
+type lex_result = { tokens : (token * pos) list; end_pos : pos }
+[@@deriving show]
 
-let lex (text : string) = state_from text |> lex'
+let rec lex' s =
+  with_advanced_or s { tokens = []; end_pos = s.pos } (fun head advanced ->
+      let tokens, after =
+        match head with
+        | ' ' | '\t' | '\n' -> ([], advanced)
+        | ident_start when is_ident_start ident_start ->
+            let ident_rest, after_ident = lex_ident_rest advanced in
+            let ident = prepend_char ident_start ident_rest in
+            ([ (ident_keywd_or_bool_of ident, s.pos) ], after_ident)
+        | num_start when is_digit num_start ->
+            let num_rest, after_num = lex_num_rest advanced in
+            let num = prepend_char num_start num_rest |> int_of_string in
+            ([ (Num num, s.pos) ], after_num)
+        | '"' ->
+            let string, after_string = lex_string_rest advanced in
+            ([ (String string, s.pos) ], after_string)
+        | '\'' ->
+            let rune, after_rune = lex_rune_rest advanced in
+            ([ (Rune rune, s.pos) ], after_rune)
+        | '=' ->
+            with_advanced_or advanced
+              ([ (Assign, s.pos) ], advanced)
+              (fun head remaining ->
+                if head = '=' then ([ (Eq, s.pos) ], remaining)
+                else ([ (Assign, s.pos) ], advanced))
+        | '+' -> ([ (Plus, s.pos) ], advanced)
+        | '-' -> ([ (Mins, s.pos) ], advanced)
+        | '*' -> ([ (Astr, s.pos) ], advanced)
+        | '/' -> ([ (Slsh, s.pos) ], advanced)
+        | '%' -> ([ (Perc, s.pos) ], advanced)
+        | '&' ->
+            ( [ (And, s.pos) ],
+              expect_char advanced '&' (fun p -> UnterminatedAnd p) )
+        | '|' ->
+            ( [ (Or, s.pos) ],
+              expect_char advanced '|' (fun p -> UnterminatedOr p) )
+        | '!' ->
+            with_advanced_or advanced
+              ([ (Not, s.pos) ], advanced)
+              (fun head remaining ->
+                if head = '=' then ([ (Ne, s.pos) ], remaining)
+                else ([ (Not, s.pos) ], advanced))
+        | '<' ->
+            with_advanced_or advanced
+              ([ (Lt, s.pos) ], advanced)
+              (fun head remaining ->
+                if head = '=' then ([ (Le, s.pos) ], remaining)
+                else ([ (Lt, s.pos) ], advanced))
+        | '(' -> ([ (OpenParen, s.pos) ], advanced)
+        | ')' -> ([ (CloseParen, s.pos) ], advanced)
+        | '[' -> ([ (OpenSquareBrkt, s.pos) ], advanced)
+        | ']' -> ([ (CloseSquareBrkt, s.pos) ], advanced)
+        | '{' -> ([ (OpenCurlyBrkt, s.pos) ], advanced)
+        | '}' -> ([ (CloseCurlyBrkt, s.pos) ], advanced)
+        | ':' -> ([ (Colon, s.pos) ], advanced)
+        | '.' -> ([ (Dot, s.pos) ], advanced)
+        | ',' -> ([ (Comma, s.pos) ], advanced)
+        | u -> raise (UnexpectedChar (u, s.pos))
+      in
+      let { tokens = tokens_rest; end_pos } = lex' after in
+      { tokens = tokens @ tokens_rest; end_pos })
 
-type lex_result = (token * pos) list [@@deriving show]
+let lex text = state_from text |> lex'
 
 let%expect_test _ =
   lex "_foo\t_13651\nBar_651 Iljbzlskmvk" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [((Lex.Ident "_foo"), 1:1); ((Lex.Ident "_13651"), 1:6);
-        ((Lex.Ident "Bar_651"), 2:1); ((Lex.Ident "Iljbzlskmvk"), 2:9)]
+      { Lex.tokens =
+        [((Lex.Ident "_foo"), 1:1); ((Lex.Ident "_13651"), 1:6);
+          ((Lex.Ident "Bar_651"), 2:1); ((Lex.Ident "Iljbzlskmvk"), 2:9)];
+        end_pos = 2:20 }
     |}]
 
 let%expect_test _ =
   lex "0123456789 91555 31512 11 3" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [((Lex.Num 123456789), 1:1); ((Lex.Num 91555), 1:12);
-        ((Lex.Num 31512), 1:18); ((Lex.Num 11), 1:24); ((Lex.Num 3), 1:27)]
+      { Lex.tokens =
+        [((Lex.Num 123456789), 1:1); ((Lex.Num 91555), 1:12);
+          ((Lex.Num 31512), 1:18); ((Lex.Num 11), 1:24); ((Lex.Num 3), 1:27)];
+        end_pos = 1:28 }
     |}]
 
 let%expect_test _ =
@@ -411,50 +419,61 @@ let%expect_test _ =
   |> show_lex_result |> print_endline;
   [%expect
     {|
-      [((Lex.Keywd Lex.Brk), 1:1); ((Lex.Keywd Lex.Ctn), 1:5);
-        ((Lex.Keywd Lex.Else), 1:9); ((Lex.Bool false), 1:14);
-        ((Lex.Keywd Lex.If), 1:20); ((Lex.Keywd Lex.Loop), 1:23);
-        ((Lex.Keywd Lex.Pre), 1:28); ((Lex.Keywd Lex.Proc), 1:32);
-        ((Lex.Keywd Lex.Ret), 1:37); ((Lex.Bool true), 1:41);
-        ((Lex.Keywd Lex.Val), 1:46); ((Lex.Keywd Lex.Var), 1:50)]
+      { Lex.tokens =
+        [((Lex.Keywd Lex.Brk), 1:1); ((Lex.Keywd Lex.Ctn), 1:5);
+          ((Lex.Keywd Lex.Else), 1:9); ((Lex.Bool false), 1:14);
+          ((Lex.Keywd Lex.If), 1:20); ((Lex.Keywd Lex.Loop), 1:23);
+          ((Lex.Keywd Lex.Pre), 1:28); ((Lex.Keywd Lex.Proc), 1:32);
+          ((Lex.Keywd Lex.Ret), 1:37); ((Lex.Bool true), 1:41);
+          ((Lex.Keywd Lex.Val), 1:46); ((Lex.Keywd Lex.Var), 1:50)];
+        end_pos = 1:53 }
     |}]
 
 let%expect_test _ =
   lex "\"foo\" \"bar\\n\"" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [((Lex.String "foo"), 1:1); ((Lex.String "bar\n"), 1:7)]
+      { Lex.tokens = [((Lex.String "foo"), 1:1); ((Lex.String "bar\n"), 1:7)];
+        end_pos = 1:14 }
     |}]
 
 let%expect_test _ =
   lex "'f' '\\n' '\\\\' " |> show_lex_result |> print_endline;
   [%expect
     {|
-      [((Lex.Rune 'f'), 1:1); ((Lex.Rune '\n'), 1:5); ((Lex.Rune '\\'), 1:10)]
+      { Lex.tokens =
+        [((Lex.Rune 'f'), 1:1); ((Lex.Rune '\n'), 1:5); ((Lex.Rune '\\'), 1:10)];
+        end_pos = 1:15 }
     |}]
 
 let%expect_test _ =
   lex "= =a =" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [(Lex.Assign, 1:1); (Lex.Assign, 1:3); ((Lex.Ident "a"), 1:4);
-        (Lex.Assign, 1:6)]
+      { Lex.tokens =
+        [(Lex.Assign, 1:1); (Lex.Assign, 1:3); ((Lex.Ident "a"), 1:4);
+          (Lex.Assign, 1:6)];
+        end_pos = 1:7 }
     |}]
 
 let%expect_test _ =
   lex "+ - * / % ++ -- *=" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [(Lex.Plus, 1:1); (Lex.Mins, 1:3); (Lex.Astr, 1:5); (Lex.Slsh, 1:7);
-        (Lex.Perc, 1:9); (Lex.Plus, 1:11); (Lex.Plus, 1:12); (Lex.Mins, 1:14);
-        (Lex.Mins, 1:15); (Lex.Astr, 1:17); (Lex.Assign, 1:18)]
+      { Lex.tokens =
+        [(Lex.Plus, 1:1); (Lex.Mins, 1:3); (Lex.Astr, 1:5); (Lex.Slsh, 1:7);
+          (Lex.Perc, 1:9); (Lex.Plus, 1:11); (Lex.Plus, 1:12); (Lex.Mins, 1:14);
+          (Lex.Mins, 1:15); (Lex.Astr, 1:17); (Lex.Assign, 1:18)];
+        end_pos = 1:19 }
     |}]
 
 let%expect_test _ =
   lex "&& || ! !" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [(Lex.And, 1:1); (Lex.Or, 1:4); (Lex.Not, 1:7); (Lex.Not, 1:9)]
+      { Lex.tokens =
+        [(Lex.And, 1:1); (Lex.Or, 1:4); (Lex.Not, 1:7); (Lex.Not, 1:9)];
+        end_pos = 1:10 }
     |}]
 
 let%test_unit _ =
@@ -477,25 +496,32 @@ let%expect_test _ =
   lex "== != <= < <" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [(Lex.Eq, 1:1); (Lex.Ne, 1:4); (Lex.Le, 1:7); (Lex.Lt, 1:10); (Lex.Lt, 1:12)]
+      { Lex.tokens =
+        [(Lex.Eq, 1:1); (Lex.Ne, 1:4); (Lex.Le, 1:7); (Lex.Lt, 1:10);
+          (Lex.Lt, 1:12)];
+        end_pos = 1:13 }
     |}]
 
 let%expect_test _ =
   lex "() [] {} ( [ { ) ] }" |> show_lex_result |> print_endline;
   [%expect
     {|
-      [(Lex.OpenParen, 1:1); (Lex.CloseParen, 1:2); (Lex.OpenSquareBrkt, 1:4);
-        (Lex.CloseSquareBrkt, 1:5); (Lex.OpenCurlyBrkt, 1:7);
-        (Lex.CloseCurlyBrkt, 1:8); (Lex.OpenParen, 1:10);
-        (Lex.OpenSquareBrkt, 1:12); (Lex.OpenCurlyBrkt, 1:14);
-        (Lex.CloseParen, 1:16); (Lex.CloseSquareBrkt, 1:18);
-        (Lex.CloseCurlyBrkt, 1:20)]
+      { Lex.tokens =
+        [(Lex.OpenParen, 1:1); (Lex.CloseParen, 1:2); (Lex.OpenSquareBrkt, 1:4);
+          (Lex.CloseSquareBrkt, 1:5); (Lex.OpenCurlyBrkt, 1:7);
+          (Lex.CloseCurlyBrkt, 1:8); (Lex.OpenParen, 1:10);
+          (Lex.OpenSquareBrkt, 1:12); (Lex.OpenCurlyBrkt, 1:14);
+          (Lex.CloseParen, 1:16); (Lex.CloseSquareBrkt, 1:18);
+          (Lex.CloseCurlyBrkt, 1:20)];
+        end_pos = 1:21 }
     |}]
 
 let%expect_test _ =
   lex ": . ," |> show_lex_result |> print_endline;
-  [%expect {|
-      [(Lex.Colon, 1:1); (Lex.Dot, 1:3); (Lex.Comma, 1:5)]
+  [%expect
+    {|
+      { Lex.tokens = [(Lex.Colon, 1:1); (Lex.Dot, 1:3); (Lex.Comma, 1:5)];
+        end_pos = 1:6 }
     |}]
 
 let%test_unit _ =
