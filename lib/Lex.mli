@@ -4,6 +4,8 @@ type keyword = Brk | Ctn | Else | If | Loop | Pre | Proc | Ret | Val | Var
 type token =
   | Ident of string
   | Keywd of keyword
+  | Bool of bool
+  | Num of int
   | String of string
   | Rune of char
   | Assign

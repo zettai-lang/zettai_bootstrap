@@ -9,6 +9,8 @@ type keyword = Brk | Ctn | Else | If | Loop | Pre | Proc | Ret | Val | Var
 type token =
   | Ident of string
   | Keywd of keyword
+  | Bool of bool
+  | Num of int
   | String of string
   | Rune of char
   | Assign
@@ -113,14 +115,39 @@ let%test_unit _ =
     (state_from "" |> lex_ident_rest)
     ~expect:("", { text = ""; pos = { row = 1; col = 1 } })
 
-let ident_or_keywd_of = function
+let rec lex_num_rest (s : state) =
+  with_advanced_or s ("", s) (fun head advanced ->
+      if is_digit head then
+        let num_rest, after_num = lex_num_rest advanced in
+        let num = prepend_char head num_rest in
+        (num, after_num)
+      else ("", s))
+
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "0123456789" |> lex_num_rest)
+    ~expect:("0123456789", { text = ""; pos = { row = 1; col = 11 } })
+
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "0123456789 ***" |> lex_num_rest)
+    ~expect:("0123456789", { text = " ***"; pos = { row = 1; col = 11 } })
+
+let%test_unit _ =
+  [%test_result: string_state_tuple]
+    (state_from "" |> lex_num_rest)
+    ~expect:("", { text = ""; pos = { row = 1; col = 1 } })
+
+let ident_keywd_or_bool_of = function
   | "brk" -> Keywd Brk
   | "ctn" -> Keywd Ctn
   | "else" -> Keywd Else
+  | "false" -> Bool false
   | "if" -> Keywd If
   | "loop" -> Keywd Loop
   | "pre" -> Keywd Pre
   | "proc" -> Keywd Proc
+  | "true" -> Bool true
   | "ret" -> Keywd Ret
   | "val" -> Keywd Val
   | "var" -> Keywd Var
@@ -308,7 +335,11 @@ let rec lex' (s : state) =
       | ident_start when is_ident_start ident_start ->
           let ident_rest, after_ident = lex_ident_rest advanced in
           let ident = prepend_char ident_start ident_rest in
-          [ (ident_or_keywd_of ident, s.pos) ] @ lex' after_ident
+          [ (ident_keywd_or_bool_of ident, s.pos) ] @ lex' after_ident
+      | num_start when is_digit num_start ->
+          let num_rest, after_num = lex_num_rest advanced in
+          let num = prepend_char num_start num_rest |> int_of_string in
+          [ (Num num, s.pos) ] @ lex' after_num
       | '"' ->
           let string, after_string = lex_string_rest advanced in
           [ (String string, s.pos) ] @ lex' after_string
@@ -368,15 +399,24 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "brk ctn else if loop pre proc ret val var"
+  lex "0123456789 91555 31512 11 3" |> show_lex_result |> print_endline;
+  [%expect
+    {|
+      [((Lex.Num 123456789), 1:1); ((Lex.Num 91555), 1:12);
+        ((Lex.Num 31512), 1:18); ((Lex.Num 11), 1:24); ((Lex.Num 3), 1:27)]
+    |}]
+
+let%expect_test _ =
+  lex "brk ctn else false if loop pre proc ret true val var"
   |> show_lex_result |> print_endline;
   [%expect
     {|
       [((Lex.Keywd Lex.Brk), 1:1); ((Lex.Keywd Lex.Ctn), 1:5);
-        ((Lex.Keywd Lex.Else), 1:9); ((Lex.Keywd Lex.If), 1:14);
-        ((Lex.Keywd Lex.Loop), 1:17); ((Lex.Keywd Lex.Pre), 1:22);
-        ((Lex.Keywd Lex.Proc), 1:26); ((Lex.Keywd Lex.Ret), 1:31);
-        ((Lex.Keywd Lex.Val), 1:35); ((Lex.Keywd Lex.Var), 1:39)]
+        ((Lex.Keywd Lex.Else), 1:9); ((Lex.Bool false), 1:14);
+        ((Lex.Keywd Lex.If), 1:20); ((Lex.Keywd Lex.Loop), 1:23);
+        ((Lex.Keywd Lex.Pre), 1:28); ((Lex.Keywd Lex.Proc), 1:32);
+        ((Lex.Keywd Lex.Ret), 1:37); ((Lex.Bool true), 1:41);
+        ((Lex.Keywd Lex.Val), 1:46); ((Lex.Keywd Lex.Var), 1:50)]
     |}]
 
 let%expect_test _ =
