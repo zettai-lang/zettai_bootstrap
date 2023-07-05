@@ -30,6 +30,7 @@ type token =
   | Colon
   | Dot
   | Comma
+  | Nl
 [@@deriving show]
 
 type pos = { row : int; col : int }

@@ -35,6 +35,7 @@ type token =
   | Colon
   | Dot
   | Comma
+  | Nl
 [@@deriving show]
 
 [@@@coverage off]
@@ -334,7 +335,8 @@ let rec lex' s =
   with_advanced_or s { tokens = []; end_pos = s.pos } (fun head advanced ->
       let tokens, after =
         match head with
-        | ' ' | '\t' | '\n' -> ([], advanced)
+        | ' ' | '\t' -> ([], advanced)
+        | '\n' -> ([ (Nl, s.pos) ], advanced)
         | ident_start when is_ident_start ident_start ->
             let ident_rest, after_ident = lex_ident_rest advanced in
             let ident = prepend_char ident_start ident_rest in
@@ -399,7 +401,7 @@ let%expect_test _ =
   [%expect
     {|
       { Lex.tokens =
-        [((Lex.Ident "_foo"), 1:1); ((Lex.Ident "_13651"), 1:6);
+        [((Lex.Ident "_foo"), 1:1); ((Lex.Ident "_13651"), 1:6); (Lex.Nl, 1:12);
           ((Lex.Ident "Bar_651"), 2:1); ((Lex.Ident "Iljbzlskmvk"), 2:9)];
         end_pos = 2:20 }
     |}]
