@@ -94,27 +94,7 @@ let expect_advanced tl =
   | [] -> raise PreUnexpectedEOF
   | non_empty -> (List.hd non_empty, List.tl non_empty)
 
-let with_advanced_or tl default f =
-  match tl with
-  | [] -> default
-  | non_empty -> f (List.hd non_empty) (List.tl non_empty)
-
 let rec drop_nls = function (Lex.Nl, _) :: xs -> drop_nls xs | o -> o
-
-let try_make_binop t =
-  match t with
-  | Lex.Plus -> Some (fun lhs rhs -> Plus { lhs; rhs })
-  | Mins -> Some (fun lhs rhs -> Mins { lhs; rhs })
-  | Astr -> Some (fun lhs rhs -> Astr { lhs; rhs })
-  | Slsh -> Some (fun lhs rhs -> Slsh { lhs; rhs })
-  | Perc -> Some (fun lhs rhs -> Perc { lhs; rhs })
-  | And -> Some (fun lhs rhs -> And { lhs; rhs })
-  | Or -> Some (fun lhs rhs -> Or { lhs; rhs })
-  | Eq -> Some (fun lhs rhs -> Eq { lhs; rhs })
-  | Ne -> Some (fun lhs rhs -> Ne { lhs; rhs })
-  | Le -> Some (fun lhs rhs -> Le { lhs; rhs })
-  | Lt -> Some (fun lhs rhs -> Lt { lhs; rhs })
-  | _ -> None
 
 let kind_from_keywd = function
   | Lex.Pre -> Some Pre
@@ -124,129 +104,114 @@ let kind_from_keywd = function
 
 exception UnexpectedToken of Lex.token * pos
 
+(* TODO: precedence *)
 let rec parse_expr tl =
   let (t, pos), tl = expect_advanced tl in
-  match t with
-  | Lex.Ident ident_name ->
-      let lhs = Ident ident_name in
-      let after_ident_tl = tl in
-      with_advanced_or tl
-        ({ inner = lhs; pos }, tl)
-        (fun (t, sym_pos) tl ->
-          match try_make_binop t with
-          | Some make_binop ->
-              let rhs, tl = parse_expr tl in
-              ({ inner = make_binop lhs rhs; pos }, tl)
-          | None -> (
-              match t with
-              | Dot -> (
-                  let accessed = lhs in
-                  let t, tl = drop_nls tl |> expect_advanced in
-                  match t with
-                  | Ident i, accessor_pos ->
-                      let accessor = { inner = i; pos = accessor_pos } in
-                      ({ inner = Field { accessed; accessor }; pos }, tl)
-                  | u, pos -> raise (UnexpectedToken (u, pos)))
-              | OpenParen ->
-                  let callee = lhs in
-                  let args', tl = parse_prod_expr_rest tl in
-                  let args' = { inner = args'; pos = sym_pos } in
-                  ({ inner = Call { callee; args' }; pos }, tl)
-              | _ -> ({ inner = lhs; pos }, after_ident_tl)))
-  | Keywd If -> (
-      let cond, tl = parse_expr tl in
-      let if_branch, tl = parse_expr tl in
-      match tl with
-      | (Keywd Else, _) :: tl ->
-          let else_branch, tl = parse_expr tl in
-          let else_branch = Some else_branch in
-          ({ inner = If { cond; if_branch; else_branch }; pos }, tl)
-      | _ -> ({ inner = If { cond; if_branch; else_branch = None }; pos }, tl))
-  | Keywd Proc -> (
-      match tl with
-      | [] -> raise PreUnexpectedEOF
-      | (OpenParen, args_pos) :: tl -> (
-          let args, tl = parse_prod_expr_rest tl in
-          let args = { inner = args; pos = args_pos } in
-          let return_type = None in
-          match tl with
-          | (Lex.Colon, _) :: tl -> (
-              let return_type, tl = parse_expr tl in
-              let return_type = Some return_type in
-              let type_' = { args; return_type } in
-              match tl with
-              | (OpenCurlyBrkt, body_pos) :: tl ->
-                  let body_stmts, tl = parse_block_rest tl in
-                  let body = { inner = Block body_stmts; pos = body_pos } in
-                  ({ inner = Proc { type_'; body }; pos }, tl)
-              | _ -> ({ inner = ProcType type_'; pos }, tl))
-          | (OpenCurlyBrkt, body_pos) :: tl ->
-              let type_' = { args; return_type } in
-              let body_stmts, tl = parse_block_rest tl in
-              let body = { inner = Block body_stmts; pos = body_pos } in
-              ({ inner = Proc { type_'; body }; pos }, tl)
-          | _ -> ({ inner = ProcType { args; return_type }; pos }, tl))
-      | (u, pos) :: _ -> raise (UnexpectedToken (u, pos)))
-  | Bool b ->
-      let lhs = Bool b in
-      let after_bool_tl = tl in
-      with_advanced_or tl
-        ({ inner = lhs; pos }, tl)
-        (fun (t, _) tl ->
-          match try_make_binop t with
-          | Some make_binop ->
-              let rhs, tl = parse_expr tl in
-              ({ inner = make_binop lhs rhs; pos }, tl)
-          | None -> ({ inner = lhs; pos }, after_bool_tl))
-  | Num n ->
-      let lhs = Num n in
-      let after_num_tl = tl in
-      with_advanced_or tl
-        ({ inner = lhs; pos }, tl)
-        (fun (t, _) tl ->
-          match try_make_binop t with
-          | Some make_binop ->
-              let rhs, tl = parse_expr tl in
-              ({ inner = make_binop lhs rhs; pos }, tl)
-          | None -> ({ inner = lhs; pos }, after_num_tl))
-  | String s ->
-      let lhs = String s in
-      let after_string_tl = tl in
-      with_advanced_or tl
-        ({ inner = lhs; pos }, tl)
-        (fun (t, _) tl ->
-          match try_make_binop t with
-          | Some make_binop ->
-              let rhs, tl = parse_expr tl in
-              ({ inner = make_binop lhs rhs; pos }, tl)
-          | None -> ({ inner = lhs; pos }, after_string_tl))
-  | Rune c ->
-      let lhs = Rune c in
-      let after_rune_tl = tl in
-      with_advanced_or tl
-        ({ inner = lhs; pos }, tl)
-        (fun (t, _) tl ->
-          match try_make_binop t with
-          | Some make_binop ->
-              let rhs, tl = parse_expr tl in
-              ({ inner = make_binop lhs rhs; pos }, tl)
-          | None -> ({ inner = lhs; pos }, after_rune_tl))
-  | Mins ->
-      let operand, tl = parse_expr tl in
-      ({ inner = UnaryMins operand; pos }, tl)
-  | Not ->
-      let operand, tl = parse_expr tl in
-      ({ inner = Not operand; pos }, tl)
-  | OpenParen ->
-      let fields, tl = parse_prod_expr_rest tl in
-      ({ inner = Prod fields; pos }, tl)
-  | OpenSquareBrkt ->
-      let variants, tl = parse_sum_expr_rest tl in
-      ({ inner = Sum variants; pos }, tl)
-  | OpenCurlyBrkt ->
-      let stmts, tl = parse_block_rest tl in
-      ({ inner = Block stmts; pos }, tl)
-  | u -> raise (UnexpectedToken (u, pos))
+  let lhs, tl =
+    match t with
+    | Lex.Ident i -> (Ident i, tl)
+    | Keywd If -> (
+        let cond, tl = parse_expr tl in
+        let if_branch, tl = parse_expr tl in
+        match tl with
+        | (Keywd Else, _) :: tl ->
+            let else_branch, tl = parse_expr tl in
+            let else_branch = Some else_branch in
+            (If { cond; if_branch; else_branch }, tl)
+        | _ -> (If { cond; if_branch; else_branch = None }, tl))
+    | Keywd Proc -> (
+        match tl with
+        | [] -> raise PreUnexpectedEOF
+        | (OpenParen, args_pos) :: tl -> (
+            let args, tl = parse_prod_expr_rest tl in
+            let args = { inner = args; pos = args_pos } in
+            let return_type = None in
+            match tl with
+            | (Lex.Colon, _) :: tl -> (
+                let return_type, tl = parse_expr tl in
+                let return_type = Some return_type in
+                let type_' = { args; return_type } in
+                match tl with
+                | (OpenCurlyBrkt, body_pos) :: tl ->
+                    let body_stmts, tl = parse_block_rest tl in
+                    let body = { inner = Block body_stmts; pos = body_pos } in
+                    (Proc { type_'; body }, tl)
+                | _ -> (ProcType type_', tl))
+            | (OpenCurlyBrkt, body_pos) :: tl ->
+                let type_' = { args; return_type } in
+                let body_stmts, tl = parse_block_rest tl in
+                let body = { inner = Block body_stmts; pos = body_pos } in
+                (Proc { type_'; body }, tl)
+            | _ -> (ProcType { args; return_type }, tl))
+        | (u, pos) :: _ -> raise (UnexpectedToken (u, pos)))
+    | Bool b -> (Bool b, tl)
+    | Num n -> (Num n, tl)
+    | String s -> (String s, tl)
+    | Rune c -> (Rune c, tl)
+    | Mins ->
+        let operand, tl = parse_expr tl in
+        (UnaryMins operand, tl)
+    | Not ->
+        let operand, tl = parse_expr tl in
+        (Not operand, tl)
+    | OpenParen ->
+        let fields, tl = parse_prod_expr_rest tl in
+        (Prod fields, tl)
+    | OpenSquareBrkt ->
+        let variants, tl = parse_sum_expr_rest tl in
+        (Sum variants, tl)
+    | OpenCurlyBrkt ->
+        let stmts, tl = parse_block_rest tl in
+        (Block stmts, tl)
+    | u -> raise (UnexpectedToken (u, pos))
+  in
+  match tl with
+  | (Lex.Plus, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Plus { lhs; rhs }; pos }, tl)
+  | (Mins, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Mins { lhs; rhs }; pos }, tl)
+  | (Astr, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Astr { lhs; rhs }; pos }, tl)
+  | (Slsh, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Slsh { lhs; rhs }; pos }, tl)
+  | (Perc, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Perc { lhs; rhs }; pos }, tl)
+  | (And, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = And { lhs; rhs }; pos }, tl)
+  | (Or, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Or { lhs; rhs }; pos }, tl)
+  | (Eq, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Eq { lhs; rhs }; pos }, tl)
+  | (Ne, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Ne { lhs; rhs }; pos }, tl)
+  | (Le, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Le { lhs; rhs }; pos }, tl)
+  | (Lt, _) :: tl ->
+      let rhs, tl = parse_expr tl in
+      ({ inner = Lt { lhs; rhs }; pos }, tl)
+  | (Dot, _) :: tl -> (
+      let accessed = lhs in
+      match drop_nls tl with
+      | (Ident i, accessor_pos) :: tl ->
+          let accessor = { inner = i; pos = accessor_pos } in
+          ({ inner = Field { accessed; accessor }; pos }, tl)
+      | _ -> ({ inner = lhs; pos }, tl))
+  | (OpenParen, args_pos) :: tl ->
+      let callee = lhs in
+      let args', tl = parse_prod_expr_rest tl in
+      let args' = { inner = args'; pos = args_pos } in
+      ({ inner = Call { callee; args' }; pos }, tl)
+  | _ -> ({ inner = lhs; pos }, tl)
 
 and parse_prod_expr_rest tl =
   let recurse_with field tl =
