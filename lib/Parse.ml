@@ -89,9 +89,9 @@ don't have to pass around the end_pos everywhere.
 *)
 exception PreUnexpectedEOF
 
-let expect_advanced ?(exn = PreUnexpectedEOF) tl =
+let expect_advanced tl =
   match tl with
-  | [] -> raise exn
+  | [] -> raise PreUnexpectedEOF
   | non_empty -> (List.hd non_empty, List.tl non_empty)
 
 let with_advanced_or tl default f =
