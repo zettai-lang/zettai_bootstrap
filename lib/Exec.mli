@@ -1,1 +1,1 @@
-val exec : string -> string list -> bool -> unit
+val exec : string -> string list -> unit
