@@ -62,7 +62,7 @@ and proc_type = {
   return_type : expr with_pos option;
 }
 
-and proc = { type_' : proc_type; body : expr with_pos }
+and proc = { type_' : proc_type; body : stmt with_pos list }
 and sum_variant = { name' : string; value''' : expr with_pos option }
 and ident_or_num = Ident'' of string | Num'' of int
 and prod_field = Decl' of decl_field | Value' of expr

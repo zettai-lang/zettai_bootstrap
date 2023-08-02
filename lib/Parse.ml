@@ -65,7 +65,7 @@ and proc_type = {
   return_type : expr with_pos option;
 }
 
-and proc = { type_' : proc_type; body : expr with_pos }
+and proc = { type_' : proc_type; body : stmt with_pos list }
 and sum_variant = { name' : string; value''' : expr with_pos option }
 and ident_or_num = Ident'' of string | Num'' of int
 and prod_field = Decl' of decl_field | Value' of expr
@@ -104,7 +104,6 @@ let kind_from_keywd = function
 
 exception UnexpectedToken of Lex.token * pos
 
-(* TODO: precedence *)
 let rec parse_expr tl =
   let (t, pos), tl = expect_advanced tl in
   let lhs, tl =
@@ -132,15 +131,13 @@ let rec parse_expr tl =
                 let return_type = Some return_type in
                 let type_' = { args; return_type } in
                 match tl with
-                | (OpenCurlyBrkt, body_pos) :: tl ->
-                    let body_stmts, tl = parse_block_rest tl in
-                    let body = { inner = Block body_stmts; pos = body_pos } in
+                | (OpenCurlyBrkt, _) :: tl ->
+                    let body, tl = parse_block_rest tl in
                     (Proc { type_'; body }, tl)
                 | _ -> (ProcType type_', tl))
-            | (OpenCurlyBrkt, body_pos) :: tl ->
+            | (OpenCurlyBrkt, _) :: tl ->
                 let type_' = { args; return_type } in
-                let body_stmts, tl = parse_block_rest tl in
-                let body = { inner = Block body_stmts; pos = body_pos } in
+                let body, tl = parse_block_rest tl in
                 (Proc { type_'; body }, tl)
             | _ -> (ProcType { args; return_type }, tl))
         | (u, pos) :: _ -> raise (UnexpectedToken (u, pos)))
@@ -165,6 +162,9 @@ let rec parse_expr tl =
         (Block stmts, tl)
     | u -> raise (UnexpectedToken (u, pos))
   in
+  parse_expr_rest lhs pos tl
+
+and parse_expr_rest lhs pos tl =
   match tl with
   | (Lex.Plus, _) :: tl ->
       let rhs, tl = parse_expr tl in
@@ -204,13 +204,13 @@ let rec parse_expr tl =
       match drop_nls tl with
       | (Ident i, accessor_pos) :: tl ->
           let accessor = { inner = i; pos = accessor_pos } in
-          ({ inner = Field { accessed; accessor }; pos }, tl)
+          parse_expr_rest (Field { accessed; accessor }) pos tl
       | _ -> ({ inner = lhs; pos }, tl))
   | (OpenParen, args_pos) :: tl ->
       let callee = lhs in
       let args', tl = parse_prod_expr_rest tl in
       let args' = { inner = args'; pos = args_pos } in
-      ({ inner = Call { callee; args' }; pos }, tl)
+      parse_expr_rest (Call { callee; args' }) pos tl
   | _ -> ({ inner = lhs; pos }, tl)
 
 and parse_prod_expr_rest tl =
@@ -406,12 +406,189 @@ and parse_stmt tl =
 
 exception UnexpectedEOF of pos
 
+let prefix_unary_prec expr =
+  let pos = expr.pos in
+  match expr.inner with
+  | Not operand ->
+      let make_not operand = { inner = Not operand; pos } in
+      Some (make_not, operand, 11)
+  | UnaryMins operand ->
+      let make_unary_mins operand = { inner = UnaryMins operand; pos } in
+      Some (make_unary_mins, operand, 11)
+  | _ -> None
+
+(*
+  let postfix_unary_prec expr =
+    let pos = expr.pos in
+    match expr.inner with
+    | Field { accessed; accessor } ->
+        let make_field { inner = accessed; pos } =
+          { inner = Field { accessed; accessor }; pos }
+        in
+        Some (make_field, { inner = accessed; pos }, 14)
+    | Call { callee; args' } ->
+        let make_call { inner = callee; pos } =
+          { inner = Call { callee; args' }; pos }
+        in
+        Some (make_call, { inner = callee; pos }, 15)
+    | _ -> None
+*)
+
+let binary_prec expr =
+  let pos = expr.pos in
+  match expr.inner with
+  | Plus { lhs; rhs } ->
+      let make_plus { inner = lhs; pos } rhs =
+        { inner = Plus { lhs; rhs }; pos }
+      in
+      Some (make_plus, { inner = lhs; pos }, rhs, 9)
+  | Mins { lhs; rhs } ->
+      let make_mins { inner = lhs; pos } rhs =
+        { inner = Mins { lhs; rhs }; pos }
+      in
+      Some (make_mins, { inner = lhs; pos }, rhs, 9)
+  | Astr { lhs; rhs } ->
+      let make_astr { inner = lhs; pos } rhs =
+        { inner = Astr { lhs; rhs }; pos }
+      in
+      Some (make_astr, { inner = lhs; pos }, rhs, 10)
+  | Slsh { lhs; rhs } ->
+      let make_slsh { inner = lhs; pos } rhs =
+        { inner = Slsh { lhs; rhs }; pos }
+      in
+      Some (make_slsh, { inner = lhs; pos }, rhs, 10)
+  | Perc { lhs; rhs } ->
+      let make_perc { inner = lhs; pos } rhs =
+        { inner = Perc { lhs; rhs }; pos }
+      in
+      Some (make_perc, { inner = lhs; pos }, rhs, 10)
+  | And { lhs; rhs } ->
+      let make_and { inner = lhs; pos } rhs =
+        { inner = And { lhs; rhs }; pos }
+      in
+      Some (make_and, { inner = lhs; pos }, rhs, 7)
+  | Or { lhs; rhs } ->
+      let make_or { inner = lhs; pos } rhs = { inner = Or { lhs; rhs }; pos } in
+      Some (make_or, { inner = lhs; pos }, rhs, 6)
+  | Eq { lhs; rhs } ->
+      let make_eq { inner = lhs; pos } rhs = { inner = Eq { lhs; rhs }; pos } in
+      Some (make_eq, { inner = lhs; pos }, rhs, 8)
+  | Ne { lhs; rhs } ->
+      let make_ne { inner = lhs; pos } rhs = { inner = Ne { lhs; rhs }; pos } in
+      Some (make_ne, { inner = lhs; pos }, rhs, 8)
+  | Le { lhs; rhs } ->
+      let make_le { inner = lhs; pos } rhs = { inner = Le { lhs; rhs }; pos } in
+      Some (make_le, { inner = lhs; pos }, rhs, 8)
+  | Lt { lhs; rhs } ->
+      let make_lt { inner = lhs; pos } rhs = { inner = Lt { lhs; rhs }; pos } in
+      Some (make_lt, { inner = lhs; pos }, rhs, 8)
+  | _ -> None
+
+let rec fix_expr_prec { inner = expr; pos } =
+  match expr with
+  | Sum variants ->
+      let fix_variant_prec variant =
+        let value''' = Option.map fix_expr_prec variant.inner.value''' in
+        let inner = { variant.inner with value''' } in
+        { variant with inner }
+      in
+      { inner = Sum (List.map fix_variant_prec variants); pos }
+  | Prod fields -> { inner = Prod (List.map fix_prod_field_prec fields); pos }
+  | Block stmts -> { inner = Block (List.map fix_stmt_prec stmts); pos }
+  | If { cond; if_branch; else_branch } ->
+      let cond = fix_expr_prec cond in
+      let if_branch = fix_expr_prec if_branch in
+      let else_branch = Option.map fix_expr_prec else_branch in
+      { inner = If { cond; if_branch; else_branch }; pos }
+  | ProcType proc_type ->
+      { inner = ProcType (fix_proc_type_prec proc_type); pos }
+  | Proc { type_'; body } ->
+      let type_' = fix_proc_type_prec type_' in
+      let body = List.map fix_stmt_prec body in
+      { inner = Proc { type_'; body }; pos }
+  | _ -> (
+      (*
+        Some combinations that we would need to check to be completely general
+        can be omitted because there are no unaries with lower precedence than
+        any of the binaries.
+      *)
+      match binary_prec { inner = expr; pos } with
+      | Some (make, lhs, rhs, prec) ->
+          let lhs = fix_expr_prec lhs in
+          let rhs = fix_expr_prec rhs in
+          let make, lhs, rhs, prec =
+            match binary_prec lhs with
+            | Some (make_inner, lhs_inner, rhs_inner, prec_inner) ->
+                if prec > prec_inner then
+                  let rhs = make rhs_inner rhs |> fix_expr_prec in
+                  (make_inner, lhs_inner, rhs, prec_inner)
+                else (make, lhs, rhs, prec)
+            | None -> (make, lhs, rhs, prec)
+          in
+          let make, lhs, rhs, _ =
+            match binary_prec rhs with
+            | Some (make_inner, lhs_inner, rhs_inner, prec_inner) ->
+                if prec >= prec_inner then
+                  let lhs = make lhs_inner lhs |> fix_expr_prec in
+                  (make_inner, lhs, rhs_inner, prec_inner)
+                else (make, lhs, rhs, prec)
+            | None -> (make, lhs, rhs, prec)
+          in
+          make lhs rhs
+      | None -> (
+          match prefix_unary_prec { inner = expr; pos } with
+          | Some (make, operator, _) -> (
+              let operator = fix_expr_prec operator in
+              match binary_prec operator with
+              | Some (make_inner, lhs, rhs, _) ->
+                  (*
+                    Don't even have to compare precedences, we know the
+                    conclusion because one is binary and the other is unary.
+                  *)
+                  let lhs = fix_expr_prec lhs in
+                  let rhs = fix_expr_prec rhs in
+                  make_inner (make lhs) rhs
+              | None -> make operator)
+          | None -> { inner = expr; pos }))
+
+and fix_proc_type_prec { args = { inner = fields; pos }; return_type } =
+  let args = { inner = List.map fix_prod_field_prec fields; pos } in
+  let return_type = Option.map fix_expr_prec return_type in
+  { args; return_type }
+
+and fix_prod_field_prec { inner = field; pos } =
+  match field with
+  | Decl' decl ->
+      let type_'' = Option.map fix_expr_prec decl.type_'' in
+      let value'' = Option.map fix_expr_prec decl.value'' in
+      { inner = Decl' { decl with type_''; value'' }; pos }
+  | Value' expr ->
+      let { inner; pos } = fix_expr_prec { inner = expr; pos } in
+      { inner = Value' inner; pos }
+
+and fix_stmt_prec stmt =
+  let pos = stmt.pos in
+  match stmt.inner with
+  | Ret expr -> { inner = Ret (Option.map fix_expr_prec expr); pos }
+  | Decl decl ->
+      let type_ = Option.map fix_expr_prec decl.type_ in
+      let value = Option.map fix_expr_prec decl.value in
+      { inner = Decl { decl with type_; value }; pos }
+  | Assign assign ->
+      let value' = fix_expr_prec assign.value' in
+      { inner = Assign { assign with value' }; pos }
+  | Loop loop -> { inner = Loop (fix_expr_prec loop); pos }
+  | Expr expr ->
+      let { inner; pos } = fix_expr_prec { inner = expr; pos } in
+      { inner = Expr inner; pos }
+  | Brk | Ctn -> stmt
+
 let parse text =
   let lr = Lex.lex text in
   try
     let ast, trailing = drop_nls lr.tokens |> parse_expr in
     match drop_nls trailing with
-    | [] -> ast
+    | [] -> fix_expr_prec ast
     | (t, pos) :: _ -> raise (UnexpectedToken (t, pos))
   with PreUnexpectedEOF -> raise (UnexpectedEOF lr.end_pos)
 
@@ -487,81 +664,53 @@ let%expect_test _ =
   [%expect
     {|
     { Parse.inner =
-      (Parse.Plus
-         { Parse.lhs = (Parse.Num 1);
+      (Parse.Or
+         { Parse.lhs =
+           (Parse.And
+              { Parse.lhs = (Parse.Num 7);
+                rhs =
+                { Parse.inner =
+                  (Parse.Plus
+                     { Parse.lhs =
+                       (Parse.Mins
+                          { Parse.lhs =
+                            (Parse.Astr
+                               { Parse.lhs =
+                                 (Parse.Slsh
+                                    { Parse.lhs =
+                                      (Parse.Perc
+                                         { Parse.lhs = (Parse.Num 6);
+                                           rhs =
+                                           { Parse.inner = (Parse.Num 5);
+                                             pos = 1:17 }
+                                           });
+                                      rhs =
+                                      { Parse.inner = (Parse.Num 4); pos = 1:13 }
+                                      });
+                                 rhs = { Parse.inner = (Parse.Num 3); pos = 1:9 }
+                                 });
+                            rhs = { Parse.inner = (Parse.Num 2); pos = 1:5 } });
+                       rhs = { Parse.inner = (Parse.Num 1); pos = 1:1 } });
+                  pos = 1:21 }
+                });
            rhs =
            { Parse.inner =
-             (Parse.Mins
-                { Parse.lhs = (Parse.Num 2);
-                  rhs =
-                  { Parse.inner =
-                    (Parse.Astr
-                       { Parse.lhs = (Parse.Num 3);
-                         rhs =
-                         { Parse.inner =
-                           (Parse.Slsh
-                              { Parse.lhs = (Parse.Num 4);
-                                rhs =
-                                { Parse.inner =
-                                  (Parse.Perc
-                                     { Parse.lhs = (Parse.Num 5);
-                                       rhs =
-                                       { Parse.inner =
-                                         (Parse.And
-                                            { Parse.lhs = (Parse.Num 6);
-                                              rhs =
-                                              { Parse.inner =
-                                                (Parse.Or
-                                                   { Parse.lhs = (Parse.Num 7);
-                                                     rhs =
-                                                     { Parse.inner =
-                                                       (Parse.Eq
-                                                          { Parse.lhs =
-                                                            (Parse.Num 8);
-                                                            rhs =
-                                                            { Parse.inner =
-                                                              (Parse.Ne
-                                                                 { Parse.lhs =
-                                                                   (Parse.Num 9);
-                                                                   rhs =
-                                                                   { Parse.inner =
-                                                                     (Parse.Le
-                                                                        { Parse.lhs =
-                                                                        (Parse.Num
-                                                                        10);
-                                                                        rhs =
-                                                                        { Parse.inner =
-                                                                        (Parse.Lt
-                                                                        { Parse.lhs =
-                                                                        (Parse.Num
-                                                                        11);
-                                                                        rhs =
-                                                                        { Parse.inner =
-                                                                        (Parse.Num
-                                                                        12);
-                                                                        pos =
-                                                                        1:52 } });
-                                                                        pos =
-                                                                        1:47 } });
-                                                                     pos = 1:41 }
-                                                                   });
-                                                              pos = 1:36 }
-                                                            });
-                                                       pos = 1:31 }
-                                                     });
-                                                pos = 1:26 }
-                                              });
-                                         pos = 1:21 }
-                                       });
-                                  pos = 1:17 }
-                                });
-                           pos = 1:13 }
-                         });
-                    pos = 1:9 }
-                  });
-             pos = 1:5 }
+             (Parse.Lt
+                { Parse.lhs =
+                  (Parse.Eq
+                     { Parse.lhs =
+                       (Parse.Ne
+                          { Parse.lhs =
+                            (Parse.Le
+                               { Parse.lhs = (Parse.Num 11);
+                                 rhs =
+                                 { Parse.inner = (Parse.Num 10); pos = 1:41 } });
+                            rhs = { Parse.inner = (Parse.Num 9); pos = 1:36 } });
+                       rhs = { Parse.inner = (Parse.Num 8); pos = 1:31 } });
+                  rhs = { Parse.inner = (Parse.Num 12); pos = 1:52 } });
+             pos = 1:47 }
            });
-      pos = 1:1 }
+      pos = 1:26 }
   |}]
 
 let%expect_test _ =
@@ -600,31 +749,32 @@ let%expect_test _ =
   [%expect
     {|
     { Parse.inner = (Parse.UnaryMins { Parse.inner = (Parse.Num 77); pos = 1:2 });
-      pos = 1:1 } |}]
+      pos = 1:1 }
+  |}]
 
 let%expect_test _ =
   parse "-77 - -77" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
-      (Parse.UnaryMins
-         { Parse.inner =
-           (Parse.Mins
-              { Parse.lhs = (Parse.Num 77);
-                rhs =
-                { Parse.inner =
-                  (Parse.UnaryMins { Parse.inner = (Parse.Num 77); pos = 1:8 });
-                  pos = 1:7 }
-                });
-           pos = 1:2 });
-      pos = 1:1 } |}]
+      (Parse.Mins
+         { Parse.lhs =
+           (Parse.UnaryMins { Parse.inner = (Parse.Num 77); pos = 1:2 });
+           rhs =
+           { Parse.inner =
+             (Parse.UnaryMins { Parse.inner = (Parse.Num 77); pos = 1:8 });
+             pos = 1:7 }
+           });
+      pos = 1:1 }
+  |}]
 
 let%expect_test _ =
   parse "!false" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner = (Parse.Not { Parse.inner = (Parse.Bool false); pos = 1:2 });
-      pos = 1:1 } |}]
+      pos = 1:1 }
+  |}]
 
 let%test_unit _ =
   let f () = parse "5 5" in
@@ -786,7 +936,8 @@ let%expect_test _ =
     {|
       { Parse.inner =
         (Parse.Block [{ Parse.inner = (Parse.Expr (Parse.Bool true)); pos = 1:3 }]);
-        pos = 1:1 } |}]
+        pos = 1:1 }
+  |}]
 
 let%test_unit _ =
   let f () = parse "{ true   " in
@@ -1322,7 +1473,8 @@ let%expect_test _ =
                   type_'' = None; value'' = None });
              pos = 1:16 }
            ]);
-      pos = 1:1 } |}]
+      pos = 1:1 }
+  |}]
 
 let%expect_test _ =
   parse "(pre foo, pre bar, pre baz)" |> show_ast |> print_endline;
@@ -1410,7 +1562,8 @@ let%expect_test _ =
       { Parse.inner =
         (Parse.ProcType
            { Parse.args = { Parse.inner = []; pos = 1:5 }; return_type = None });
-        pos = 1:1 } |}]
+        pos = 1:1 }
+  |}]
 
 let%expect_test _ =
   parse "proc(): Nat" |> show_ast |> print_endline;
@@ -1432,12 +1585,7 @@ let%expect_test _ =
       (Parse.Proc
          { Parse.type_' =
            { Parse.args = { Parse.inner = []; pos = 1:5 }; return_type = None };
-           body =
-           { Parse.inner =
-             (Parse.Block
-                [{ Parse.inner = (Parse.Expr (Parse.Prod [])); pos = 1:10 }]);
-             pos = 1:8 }
-           });
+           body = [{ Parse.inner = (Parse.Expr (Parse.Prod [])); pos = 1:10 }] });
       pos = 1:1 }
   |}]
 
@@ -1451,12 +1599,7 @@ let%expect_test _ =
            { Parse.args = { Parse.inner = []; pos = 1:5 };
              return_type =
              (Some { Parse.inner = (Parse.Ident "Nat"); pos = 1:9 }) };
-           body =
-           { Parse.inner =
-             (Parse.Block
-                [{ Parse.inner = (Parse.Expr (Parse.Num 1)); pos = 1:15 }]);
-             pos = 1:13 }
-           });
+           body = [{ Parse.inner = (Parse.Expr (Parse.Num 1)); pos = 1:15 }] });
       pos = 1:1 }
   |}]
 
@@ -1488,12 +1631,7 @@ let%expect_test _ =
                           ]);
                      pos = 1:9 })
              };
-           body =
-           { Parse.inner =
-             (Parse.Block
-                [{ Parse.inner = (Parse.Expr (Parse.Num 1)); pos = 1:37 }]);
-             pos = 1:35 }
-           });
+           body = [{ Parse.inner = (Parse.Expr (Parse.Num 1)); pos = 1:37 }] });
       pos = 1:1 }
   |}]
 
@@ -1505,7 +1643,8 @@ let%expect_test _ =
       (Parse.Field
          { Parse.accessed = (Parse.Ident "foo");
            accessor = { Parse.inner = "bar"; pos = 1:5 } });
-      pos = 1:1 } |}]
+      pos = 1:1 }
+  |}]
 
 let%expect_test _ =
   parse "foo()" |> show_ast |> print_endline;
@@ -1515,7 +1654,8 @@ let%expect_test _ =
       (Parse.Call
          { Parse.callee = (Parse.Ident "foo");
            args' = { Parse.inner = []; pos = 1:4 } });
-      pos = 1:1 } |}]
+      pos = 1:1 }
+  |}]
 
 let%expect_test _ =
   parse "foo(5, 'o', bar)" |> show_ast |> print_endline;
@@ -1543,7 +1683,8 @@ let%expect_test _ =
                ];
              pos = 1:4 }
            });
-      pos = 1:1 } |}]
+      pos = 1:1 }
+  |}]
 
 let%test_unit _ =
   let f () = parse "foo.=" in
@@ -1572,3 +1713,103 @@ let%test_unit _ =
 let%test_unit _ =
   let f () = parse "(foo: Bar = 5[" in
   assert_raises (UnexpectedToken (OpenSquareBrkt, { row = 1; col = 14 })) f
+
+let%expect_test _ =
+  parse "!5 && 9.foo" |> show_ast |> print_endline;
+  [%expect
+    {|
+    { Parse.inner =
+      (Parse.And
+         { Parse.lhs = (Parse.Not { Parse.inner = (Parse.Num 5); pos = 1:2 });
+           rhs =
+           { Parse.inner =
+             (Parse.Field
+                { Parse.accessed = (Parse.Num 9);
+                  accessor = { Parse.inner = "foo"; pos = 1:9 } });
+             pos = 1:7 }
+           });
+      pos = 1:1 }
+  |}]
+
+let%expect_test _ =
+  parse "-foo.bar()" |> show_ast |> print_endline;
+  [%expect
+    {|
+    { Parse.inner =
+      (Parse.UnaryMins
+         { Parse.inner =
+           (Parse.Call
+              { Parse.callee =
+                (Parse.Field
+                   { Parse.accessed = (Parse.Ident "foo");
+                     accessor = { Parse.inner = "bar"; pos = 1:6 } });
+                args' = { Parse.inner = []; pos = 1:9 } });
+           pos = 1:2 });
+      pos = 1:1 }
+  |}]
+
+let%expect_test _ =
+  parse "!foo().bar().baz()" |> show_ast |> print_endline;
+  [%expect
+    {|
+    { Parse.inner =
+      (Parse.Not
+         { Parse.inner =
+           (Parse.Call
+              { Parse.callee =
+                (Parse.Field
+                   { Parse.accessed =
+                     (Parse.Call
+                        { Parse.callee =
+                          (Parse.Field
+                             { Parse.accessed =
+                               (Parse.Call
+                                  { Parse.callee = (Parse.Ident "foo");
+                                    args' = { Parse.inner = []; pos = 1:5 } });
+                               accessor = { Parse.inner = "bar"; pos = 1:8 } });
+                          args' = { Parse.inner = []; pos = 1:11 } });
+                     accessor = { Parse.inner = "baz"; pos = 1:14 } });
+                args' = { Parse.inner = []; pos = 1:17 } });
+           pos = 1:2 });
+      pos = 1:1 }
+  |}]
+
+let%expect_test _ =
+  parse "!foo().bar().baz()" |> show_ast |> print_endline;
+  [%expect
+    {|
+    { Parse.inner =
+      (Parse.Not
+         { Parse.inner =
+           (Parse.Call
+              { Parse.callee =
+                (Parse.Field
+                   { Parse.accessed =
+                     (Parse.Call
+                        { Parse.callee =
+                          (Parse.Field
+                             { Parse.accessed =
+                               (Parse.Call
+                                  { Parse.callee = (Parse.Ident "foo");
+                                    args' = { Parse.inner = []; pos = 1:5 } });
+                               accessor = { Parse.inner = "bar"; pos = 1:8 } });
+                          args' = { Parse.inner = []; pos = 1:11 } });
+                     accessor = { Parse.inner = "baz"; pos = 1:14 } });
+                args' = { Parse.inner = []; pos = 1:17 } });
+           pos = 1:2 });
+      pos = 1:1 }
+  |}]
+
+let%expect_test _ =
+  parse "-foo.bar" |> show_ast |> print_endline;
+  [%expect
+    {|
+    { Parse.inner =
+      (Parse.UnaryMins
+         { Parse.inner =
+           (Parse.Field
+              { Parse.accessed = (Parse.Ident "foo");
+                accessor = { Parse.inner = "bar"; pos = 1:6 } });
+           pos = 1:2 });
+      pos = 1:1 }
+  |}]
