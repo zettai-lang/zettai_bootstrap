@@ -313,9 +313,12 @@ and parse_sum_expr_rest = function
   | (u, pos) :: _ -> raise (UnexpectedToken (u, pos))
 
 and parse_block_rest tl =
-  let stmt, tl = parse_stmt tl in
-  let stmts_rest, tl = parse_block_after_first_stmt tl in
-  (stmt :: stmts_rest, tl)
+  match drop_nls tl with
+  | (CloseCurlyBrkt, _) :: tl -> ([], tl)
+  | _ ->
+      let stmt, tl = parse_stmt tl in
+      let stmts_rest, tl = parse_block_after_first_stmt tl in
+      (stmt :: stmts_rest, tl)
 
 and parse_block_after_first_stmt = function
   | [] -> raise PreUnexpectedEOF
@@ -928,6 +931,12 @@ let%expect_test _ =
                    pos = 1:24 })
            });
       pos = 1:1 }
+  |}]
+
+let%expect_test _ =
+  parse "{ }" |> show_ast |> print_endline;
+  [%expect {|
+      { Parse.inner = (Parse.Block []); pos = 1:1 }
   |}]
 
 let%expect_test _ =
