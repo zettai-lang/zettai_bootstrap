@@ -1,29 +1,51 @@
 exception TODO
 
+module StringMap = Map.Make (String)
+
 (*
   TODO: strings aren't really primitive values... but we do need to be able to
   represent literals somehow... might have to figure out how this works with
   intrinsics and such.
 *)
-type value = Bool of bool | Num of int | Rune of char | String of string
-type scope_entry = Pre of value | Val of value | Var of value option ref
+type value =
+  | Bool of bool
+  | Num of int
+  | Rune of char
+  | String of string
+  | Prod of scope_entry StringMap.t
 
-module StringMap = Map.Make (String)
+and scope_entry = Pre of value | Val of value | Var of value option ref
+
+let scope_entry_from_kind kind value : scope_entry =
+  match kind with
+  | Parse.Pre -> Pre value
+  | Val -> Val value
+  | Var -> Var (ref (Some value))
+
+exception UseBeforeInitialization of string * Lex.pos
+
+let value_from_scope_entry name pos = function
+  | Pre value | Val value -> value
+  | Var value_ref -> (
+      match !value_ref with
+      | Some value -> value
+      | None -> raise (UseBeforeInitialization (name, pos)))
 
 type scopes = scope_entry StringMap.t list
-type ctrl = Brk | Ctn | Ret of value option | None of value option
+type 'a ctrl_of = Brk | Ctn | Ret of value option | None of 'a
+type ctrl = value option ctrl_of
 
 exception Unreachable
 exception InvalidBinopOperands of value option * value option * Lex.pos
 exception InvalidUnaryOperand of value option * Lex.pos
 exception InvalidIfCond of value option * Lex.pos
-exception UseBeforeInitialization of string * Lex.pos
 exception UninitializedPre of string * Lex.pos
 exception UninitializedVal of string * Lex.pos
 exception StmtUsedAsVal of Lex.pos
 exception UnboundIdent of string * Lex.pos
 exception Redeclaration of string * Lex.pos
 exception ImmutableAssign of string * Lex.pos
+exception InvalidField of string * Lex.pos
 
 let rec exec_expr { Parse.inner = expr; pos } scopes : ctrl * scopes =
   let exec_binop = exec_binop pos scopes in
@@ -75,14 +97,16 @@ let rec exec_expr { Parse.inner = expr; pos } scopes : ctrl * scopes =
           | Some (Rune r1), Some (Rune r2) -> Some (Bool (r1 < r2))
           | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
   | Sum _variants -> raise TODO
-  | Prod _fields -> raise TODO
+  | Prod fields -> (
+      let ctrl_of_fields, scopes = exec_prod (List.rev fields) scopes in
+      match ctrl_of_fields with
+      | None fields -> (None (Some (Prod fields)), scopes)
+      | Brk -> (Brk, scopes)
+      | Ctn -> (Ctn, scopes)
+      | Ret value -> (Ret value, scopes))
   | Ident i -> (
       match List.find_map (fun scope -> StringMap.find_opt i scope) scopes with
-      | Some (Pre value) | Some (Val value) -> (None (Some value), scopes)
-      | Some (Var value_ref) -> (
-          match !value_ref with
-          | Some value -> (None (Some value), scopes)
-          | None -> raise (UseBeforeInitialization (i, pos)))
+      | Some entry -> (None (Some (value_from_scope_entry i pos entry)), scopes)
       | None -> raise (UnboundIdent (i, pos)))
   | Block stmts -> exec_block stmts scopes
   | If { cond; if_branch; else_branch } -> (
@@ -97,7 +121,16 @@ let rec exec_expr { Parse.inner = expr; pos } scopes : ctrl * scopes =
       | ctrl -> (ctrl, scopes))
   | ProcType { args = _; return_type = _ } -> raise TODO
   | Proc { type_' = { args = _; return_type = _ }; body = _ } -> raise TODO
-  | Field { accessed = _; accessor = _ } -> raise TODO
+  | Field { accessed; accessor = { inner = accessor; pos = accessor_pos } } -> (
+      let ctrl, scopes = exec_expr { inner = accessed; pos } scopes in
+      match ctrl with
+      | None (Some (Prod fields)) -> (
+          match StringMap.find_opt accessor fields with
+          | Some entry ->
+              (None (Some (value_from_scope_entry accessor pos entry)), scopes)
+          | None -> raise (InvalidField (accessor, accessor_pos)))
+      | None None -> raise (StmtUsedAsVal pos)
+      | ctrl -> (ctrl, scopes))
   | Call { callee = _; args' = _ } -> raise TODO
   | Bool b -> (None (Some (Bool b)), scopes)
   | Num n -> (None (Some (Num n)), scopes)
@@ -129,6 +162,43 @@ and exec_bool_binop pos scopes binop op =
 and exec_uop scopes operand op =
   let ctrl, scopes = exec_expr operand scopes in
   match ctrl with None operand -> (op operand, scopes) | ctrl -> (ctrl, scopes)
+
+and exec_prod (fields : Parse.prod_field Parse.with_pos list) scopes :
+    scope_entry StringMap.t ctrl_of * scopes =
+  match fields with
+  | [] -> (None StringMap.empty, scopes)
+  | {
+      inner =
+        Decl'
+          {
+            kind' = Some kind;
+            name_or_count = { inner = Ident'' name; pos = _ };
+            type_'' = _;
+            value'' = Some value;
+          };
+      pos;
+    }
+    :: fields -> (
+      let ctrl, scopes = exec_prod fields scopes in
+      match ctrl with
+      | None fields -> (
+          let () =
+            match StringMap.find_opt name fields with
+            | Some _ -> raise (Redeclaration (name, pos))
+            | None -> ()
+          in
+          let ctrl, scopes = exec_expr value scopes in
+          match ctrl with
+          | None (Some value) ->
+              let entry = scope_entry_from_kind kind value in
+              let fields = StringMap.add name entry fields in
+              (None fields, scopes)
+          | None None -> raise (StmtUsedAsVal pos)
+          | Brk -> (Brk, scopes)
+          | Ctn -> (Ctn, scopes)
+          | Ret value -> (Ret value, scopes))
+      | ctrl -> (ctrl, scopes))
+  | _ -> raise TODO
 
 and exec_block stmts scopes =
   match stmts with
@@ -184,12 +254,7 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
           let ctrl, scopes = exec_expr value scopes in
           match ctrl with
           | None (Some value) ->
-              let entry =
-                match kind with
-                | Pre -> Pre value
-                | Val -> Val value
-                | Var -> Var (ref (Some value))
-              in
+              let entry = scope_entry_from_kind kind value in
               let scope = StringMap.add name entry scope in
               (None None, scope :: scopes)
           | None None -> raise (StmtUsedAsVal pos)
@@ -489,3 +554,58 @@ let%test_unit _ =
   let ast = parse "if 9 5 else 9" in
   let f () = easy_exec_expr ast in
   assert_raises (InvalidIfCond (Some (Num 9), { row = 1; col = 1 })) f
+
+let%test _ =
+  let ast = parse "()" in
+  Some (Prod StringMap.empty) = easy_exec_expr ast
+
+let%test _ =
+  let ast = parse "(pre n = 5)" in
+  let fields = StringMap.empty in
+  let fields = StringMap.add "n" (Pre (Num 5)) fields in
+  Some (Prod fields) = easy_exec_expr ast
+
+let%test _ =
+  let ast = parse "(val i = 9)" in
+  let fields = StringMap.empty in
+  let fields = StringMap.add "i" (Val (Num 9)) fields in
+  Some (Prod fields) = easy_exec_expr ast
+
+let%test_unit _ =
+  let ast = parse "(val i = 9, val i = 9)" in
+  let f () = easy_exec_expr ast in
+  assert_raises (Redeclaration ("i", { row = 1; col = 13 })) f
+
+let%test _ =
+  let ast = parse "(pre i = 9, val j = 'a', var k = true)" in
+  let fields = StringMap.empty in
+  let fields = StringMap.add "i" (Pre (Num 9)) fields in
+  let fields = StringMap.add "j" (Val (Rune 'a')) fields in
+  let fields = StringMap.add "k" (Var (ref (Some (Bool true)))) fields in
+  Some (Prod fields) = easy_exec_expr ast
+
+let%test _ =
+  let ast = parse "(pre i = 9).i" in
+  Some (Num 9) = easy_exec_expr ast
+
+let%test _ =
+  let ast = parse "(pre i = 9, val j = 'a', var k = true).j" in
+  Some (Rune 'a') = easy_exec_expr ast
+
+let%test _ =
+  let ast = parse "(pre i = 9, val j = 'a', var k = true).k" in
+  Some (Bool true) = easy_exec_expr ast
+
+let%test _ =
+  let ast = parse "(pre i = 9, val j = 'a', var k = true).k" in
+  Some (Bool true) = easy_exec_expr ast
+
+let%test_unit _ =
+  let ast = parse "().i" in
+  let f () = easy_exec_expr ast in
+  assert_raises (InvalidField ("i", { row = 1; col = 4 })) f
+
+let%test_unit _ =
+  let ast = parse "{ }.i" in
+  let f () = easy_exec_expr ast in
+  assert_raises (StmtUsedAsVal { row = 1; col = 1 }) f
