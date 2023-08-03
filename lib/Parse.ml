@@ -99,7 +99,7 @@ let rec drop_nls = function (Lex.Nl, _) :: xs -> drop_nls xs | o -> o
 let kind_from_keywd = function
   | Lex.Pre -> Some Pre
   | Val -> Some Val
-  | Var -> Some Val
+  | Var -> Some Var
   | _ -> None
 
 exception UnexpectedToken of Lex.token * pos
@@ -1144,7 +1144,7 @@ let%expect_test _ =
       (Parse.Block
          [{ Parse.inner =
             (Parse.Decl
-               { Parse.kind = { Parse.inner = Parse.Val; pos = 3:7 };
+               { Parse.kind = { Parse.inner = Parse.Var; pos = 3:7 };
                  name = { Parse.inner = "foo"; pos = 3:11 };
                  type_ = (Some { Parse.inner = (Parse.Ident "Nat"); pos = 3:16 });
                  value = None });
@@ -1198,7 +1198,7 @@ let%expect_test _ =
       (Parse.Block
          [{ Parse.inner =
             (Parse.Decl
-               { Parse.kind = { Parse.inner = Parse.Val; pos = 1:3 };
+               { Parse.kind = { Parse.inner = Parse.Var; pos = 1:3 };
                  name = { Parse.inner = "bar"; pos = 1:7 }; type_ = None;
                  value = (Some { Parse.inner = (Parse.Num 7); pos = 1:13 }) });
             pos = 1:3 }
@@ -1535,7 +1535,7 @@ let%expect_test _ =
              pos = 1:20 };
            { Parse.inner =
              (Parse.Decl'
-                { Parse.kind' = (Some Parse.Val);
+                { Parse.kind' = (Some Parse.Var);
                   name_or_count =
                   { Parse.inner = (Parse.Ident'' "baz"); pos = 1:47 };
                   type_'' =
