@@ -44,7 +44,7 @@ exception UninitializedVal of string * Lex.pos
 exception StmtUsedAsVal of Lex.pos
 exception UnboundIdent of string * Lex.pos
 exception Redeclaration of string * Lex.pos
-exception ImmutableAssign of string * Lex.pos
+exception ImmutableAssign of Parse.ident_or_field * Lex.pos
 exception InvalidField of string * Lex.pos
 
 let rec exec_expr { Parse.inner = expr; pos } scopes : ctrl * scopes =
@@ -265,22 +265,35 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
           let scope = StringMap.add name (Var (ref Option.None)) scope in
           (None None, scope :: scopes))
   | Assign { assignee; value' } -> (
+      let try_scope_entry_assign assignee' =
+        match assignee' with
+        | Var value_ref -> (
+            let ctrl, scopes = exec_expr value' scopes in
+            match ctrl with
+            | None (Some value) ->
+                value_ref := Some value;
+                (None Option.None, scopes)
+            | None None -> raise (StmtUsedAsVal pos)
+            | ctrl -> (ctrl, scopes))
+        | _ -> raise (ImmutableAssign (assignee, pos))
+      in
       match assignee with
       | Ident' i -> (
           match
             List.find_map (fun scope -> StringMap.find_opt i scope) scopes
           with
-          | Some (Var value_ref) -> (
-              let ctrl, scopes = exec_expr value' scopes in
-              match ctrl with
-              | None (Some value) ->
-                  value_ref := Some value;
-                  (None None, scopes)
-              | None None -> raise (StmtUsedAsVal pos)
-              | ctrl -> (ctrl, scopes))
-          | Some _ -> raise (ImmutableAssign (i, pos))
+          | Some assignee -> try_scope_entry_assign assignee
           | None -> raise (UnboundIdent (i, pos)))
-      | Field' _field -> raise TODO)
+      | Field' { accessed; accessor = { inner = accessor; pos = accessor_pos } }
+        -> (
+          let ctrl, scopes = exec_expr { inner = accessed; pos } scopes in
+          match ctrl with
+          | None (Some (Prod fields)) -> (
+              match StringMap.find_opt accessor fields with
+              | Some field -> try_scope_entry_assign field
+              | None -> raise (InvalidField (accessor, accessor_pos)))
+          | None None -> raise (StmtUsedAsVal pos)
+          | ctrl -> (ctrl, scopes)))
   | Loop body -> exec_loop body scopes
   | Expr expr ->
       let value, scopes = exec_expr { inner = expr; pos } scopes in
