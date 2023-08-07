@@ -123,6 +123,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
       | None cond -> raise (InvalidIfCond (cond, pos))
       | ctrl -> (ctrl, scopes))
   | ProcType { args = _; return_type = _ } -> raise TODO
+  (* TODO: typecheck? *)
   | Proc { type_' = { args = _; return_type = _ }; body = _ } -> raise TODO
   | Field { accessed; accessor = { inner = accessor; pos = accessor_pos } } -> (
       let ctrl, scopes = exec_expr { inner = accessed; pos } scopes in
@@ -169,6 +170,7 @@ and exec_uop scopes operand op =
 and exec_prod fields scopes =
   match fields with
   | [] -> (None StringMap.empty, scopes)
+  (* TODO: typecheck? *)
   | {
       inner =
         Decl'
