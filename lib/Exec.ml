@@ -15,7 +15,7 @@ type value =
   | Prod of prod
 
 and scope_entry = Pre of value | Val of value | Var of value option ref
-and prod = scope_entry StringMap.t
+and prod = { fields : scope_entry StringMap.t; order : string list }
 
 let scope_entry_from_kind kind value =
   match kind with
@@ -32,7 +32,7 @@ let value_from_scope_entry name pos = function
       | Some value -> value
       | None -> raise (UseBeforeInitialization (name, pos)))
 
-let unit_val = Prod StringMap.empty
+let unit_val = Prod { fields = StringMap.empty; order = [] }
 
 type 'a ctrl_of = Brk | Ctn | Ret of value option | None of 'a
 
@@ -128,7 +128,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
   | Field { accessed; accessor = { inner = accessor; pos = accessor_pos } } -> (
       let ctrl, scopes = exec_expr { inner = accessed; pos } scopes in
       match ctrl with
-      | None (Prod fields) -> (
+      | None (Prod { fields; order = _ }) -> (
           match StringMap.find_opt accessor fields with
           | Some entry ->
               (None (value_from_scope_entry accessor pos entry), scopes)
@@ -169,7 +169,7 @@ and exec_uop scopes operand op =
 
 and exec_prod fields scopes =
   match fields with
-  | [] -> (None StringMap.empty, scopes)
+  | [] -> (None { fields = StringMap.empty; order = [] }, scopes)
   (* TODO: typecheck? *)
   | {
       inner =
@@ -185,7 +185,7 @@ and exec_prod fields scopes =
     :: fields -> (
       let ctrl, scopes = exec_prod fields scopes in
       match ctrl with
-      | None fields -> (
+      | None { fields; order } -> (
           let () =
             match StringMap.find_opt name fields with
             | Some _ -> raise (Redeclaration (name, pos))
@@ -196,7 +196,8 @@ and exec_prod fields scopes =
           | None value ->
               let entry = scope_entry_from_kind kind value in
               let fields = StringMap.add name entry fields in
-              (None fields, scopes)
+              let order = order @ [ name ] in
+              (None { fields; order }, scopes)
           | Brk -> (Brk, scopes)
           | Ctn -> (Ctn, scopes)
           | Ret value -> (Ret value, scopes))
@@ -292,7 +293,7 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
         -> (
           let ctrl, scopes = exec_expr { inner = accessed; pos } scopes in
           match ctrl with
-          | None (Prod fields) -> (
+          | None (Prod { fields; order = _ }) -> (
               match StringMap.find_opt accessor fields with
               | Some field -> try_scope_entry_assign field
               | None -> raise (InvalidField (accessor, accessor_pos)))
@@ -559,19 +560,19 @@ let%test_unit _ =
 
 let%test _ =
   let ast = parse "()" in
-  Prod StringMap.empty = easy_exec_expr ast
+  unit_val = easy_exec_expr ast
 
 let%test _ =
   let ast = parse "(pre n = 5)" in
   let fields = StringMap.empty in
   let fields = StringMap.add "n" (Pre (Num 5)) fields in
-  Prod fields = easy_exec_expr ast
+  Prod { fields; order = [ "n" ] } = easy_exec_expr ast
 
 let%test _ =
   let ast = parse "(val i = 9)" in
   let fields = StringMap.empty in
   let fields = StringMap.add "i" (Val (Num 9)) fields in
-  Prod fields = easy_exec_expr ast
+  Prod { fields; order = [ "i" ] } = easy_exec_expr ast
 
 let%test_unit _ =
   let ast = parse "(val i = 9, val i = 9)" in
@@ -584,7 +585,7 @@ let%test _ =
   let fields = StringMap.add "i" (Pre (Num 9)) fields in
   let fields = StringMap.add "j" (Val (Rune 'a')) fields in
   let fields = StringMap.add "k" (Var (ref (Some (Bool true)))) fields in
-  Prod fields = easy_exec_expr ast
+  Prod { fields; order = [ "i"; "j"; "k" ] } = easy_exec_expr ast
 
 let%test _ =
   let ast = parse "(pre i = 9).i" in
