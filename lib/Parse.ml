@@ -338,7 +338,12 @@ parse_expr and wraps it in the Expr constructor.
 and parse_stmt tl =
   let expr_fallback () =
     let { inner; pos }, tl = parse_expr tl in
-    ({ inner = Expr inner; pos }, tl)
+    match (inner, tl) with
+    | Field field, (Assign, _) :: tl ->
+        let assignee = Field' field in
+        let value', tl = parse_expr tl in
+        ({ inner = Assign { assignee; value' }; pos }, tl)
+    | _, _ -> ({ inner = Expr inner; pos }, tl)
   in
   let (t, pos), tl = expect_advanced tl in
   match t with
@@ -532,7 +537,7 @@ let rec fix_expr_prec { inner = expr; pos } =
             match binary_prec rhs with
             | Some (make_inner, lhs_inner, rhs_inner, prec_inner) ->
                 if prec >= prec_inner then
-                  let lhs = make lhs_inner lhs |> fix_expr_prec in
+                  let lhs = make lhs lhs_inner |> fix_expr_prec in
                   (make_inner, lhs, rhs_inner, prec_inner)
                 else (make, lhs, rhs, prec)
             | None -> (make, lhs, rhs, prec)
@@ -670,50 +675,47 @@ let%expect_test _ =
       (Parse.Or
          { Parse.lhs =
            (Parse.And
-              { Parse.lhs = (Parse.Num 7);
-                rhs =
-                { Parse.inner =
-                  (Parse.Plus
-                     { Parse.lhs =
-                       (Parse.Mins
+              { Parse.lhs =
+                (Parse.Mins
+                   { Parse.lhs =
+                     (Parse.Plus
+                        { Parse.lhs = (Parse.Num 1);
+                          rhs = { Parse.inner = (Parse.Num 2); pos = 1:5 } });
+                     rhs =
+                     { Parse.inner =
+                       (Parse.Perc
                           { Parse.lhs =
-                            (Parse.Astr
+                            (Parse.Slsh
                                { Parse.lhs =
-                                 (Parse.Slsh
-                                    { Parse.lhs =
-                                      (Parse.Perc
-                                         { Parse.lhs = (Parse.Num 6);
-                                           rhs =
-                                           { Parse.inner = (Parse.Num 5);
-                                             pos = 1:17 }
-                                           });
+                                 (Parse.Astr
+                                    { Parse.lhs = (Parse.Num 3);
                                       rhs =
                                       { Parse.inner = (Parse.Num 4); pos = 1:13 }
                                       });
-                                 rhs = { Parse.inner = (Parse.Num 3); pos = 1:9 }
-                                 });
-                            rhs = { Parse.inner = (Parse.Num 2); pos = 1:5 } });
-                       rhs = { Parse.inner = (Parse.Num 1); pos = 1:1 } });
-                  pos = 1:21 }
-                });
+                                 rhs =
+                                 { Parse.inner = (Parse.Num 5); pos = 1:17 } });
+                            rhs = { Parse.inner = (Parse.Num 6); pos = 1:21 } });
+                       pos = 1:9 }
+                     });
+                rhs = { Parse.inner = (Parse.Num 7); pos = 1:26 } });
            rhs =
            { Parse.inner =
              (Parse.Lt
                 { Parse.lhs =
-                  (Parse.Eq
+                  (Parse.Le
                      { Parse.lhs =
                        (Parse.Ne
                           { Parse.lhs =
-                            (Parse.Le
-                               { Parse.lhs = (Parse.Num 11);
+                            (Parse.Eq
+                               { Parse.lhs = (Parse.Num 8);
                                  rhs =
-                                 { Parse.inner = (Parse.Num 10); pos = 1:41 } });
-                            rhs = { Parse.inner = (Parse.Num 9); pos = 1:36 } });
-                       rhs = { Parse.inner = (Parse.Num 8); pos = 1:31 } });
+                                 { Parse.inner = (Parse.Num 9); pos = 1:36 } });
+                            rhs = { Parse.inner = (Parse.Num 10); pos = 1:41 } });
+                       rhs = { Parse.inner = (Parse.Num 11); pos = 1:47 } });
                   rhs = { Parse.inner = (Parse.Num 12); pos = 1:52 } });
-             pos = 1:47 }
+             pos = 1:31 }
            });
-      pos = 1:26 }
+      pos = 1:1 }
   |}]
 
 let%expect_test _ =
@@ -1820,5 +1822,43 @@ let%expect_test _ =
               { Parse.accessed = (Parse.Ident "foo");
                 accessor = { Parse.inner = "bar"; pos = 1:6 } });
            pos = 1:2 });
+      pos = 1:1 }
+  |}]
+
+let%expect_test _ =
+  parse "i + 2 == j + 1" |> show_ast |> print_endline;
+  [%expect
+    {|
+    { Parse.inner =
+      (Parse.Eq
+         { Parse.lhs =
+           (Parse.Plus
+              { Parse.lhs = (Parse.Ident "i");
+                rhs = { Parse.inner = (Parse.Num 2); pos = 1:5 } });
+           rhs =
+           { Parse.inner =
+             (Parse.Plus
+                { Parse.lhs = (Parse.Ident "j");
+                  rhs = { Parse.inner = (Parse.Num 1); pos = 1:14 } });
+             pos = 1:10 }
+           });
+      pos = 1:1 }
+  |}]
+
+let%expect_test _ =
+  parse "{ a.b = c }" |> show_ast |> print_endline;
+  [%expect
+    {|
+    { Parse.inner =
+      (Parse.Block
+         [{ Parse.inner =
+            (Parse.Assign
+               { Parse.assignee =
+                 (Parse.Field'
+                    { Parse.accessed = (Parse.Ident "a");
+                      accessor = { Parse.inner = "b"; pos = 1:5 } });
+                 value' = { Parse.inner = (Parse.Ident "c"); pos = 1:9 } });
+            pos = 1:3 }
+           ]);
       pos = 1:1 }
   |}]
