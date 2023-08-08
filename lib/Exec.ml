@@ -51,13 +51,13 @@ exception NumAsArgumentName of Lex.pos
 exception ValueAsArgument of Lex.pos
 exception VarArgument of Lex.pos
 
-let rec args_pre_and_name = function
+let rec args_pre_and_name ?(prev_is_pre = false) = function
   | [] -> []
   | {
       Parse.inner =
         Parse.Decl'
           {
-            kind' = Some kind;
+            kind';
             name_or_count = { inner = Ident'' name; pos = _ };
             type_'' = _;
             value'' = _;
@@ -65,26 +65,17 @@ let rec args_pre_and_name = function
       pos;
     }
     :: fields ->
-      let pre =
-        match kind with
-        | Parse.Pre -> true
-        | Val -> false
-        | Var -> raise (VarArgument pos)
+      let kind =
+        Option.map
+          (fun kind ->
+            match kind with
+            | Parse.Pre -> true
+            | Val -> false
+            | Var -> raise (VarArgument pos))
+          kind'
       in
-      (pre, name) :: args_pre_and_name fields
-  | {
-      Parse.inner =
-        Parse.Decl'
-          {
-            kind' = None;
-            name_or_count = { inner = Ident'' _; pos = _ };
-            type_'' = _;
-            value'' = _;
-          };
-      pos = _;
-    }
-    :: _ ->
-      raise TODO
+      let pre = Option.value kind ~default:prev_is_pre in
+      (pre, name) :: args_pre_and_name fields ~prev_is_pre:pre
   | {
       inner =
         Decl'
@@ -715,6 +706,10 @@ let%test _ =
   let ast =
     parse "{ proc(pre i: Nat, val j: Nat) { i * j } }(pre i = 2, val j = 9)"
   in
+  Num 18 = exec_ast ast
+
+let%test _ =
+  let ast = parse "{ proc(pre i, j: Nat) { i * j } }(pre i = 2, pre j = 9)" in
   Num 18 = exec_ast ast
 
 let%test_unit _ =
