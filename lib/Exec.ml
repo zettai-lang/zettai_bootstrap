@@ -2,16 +2,10 @@ exception TODO
 
 module StringMap = Map.Make (String)
 
-(*
-  TODO: strings aren't really primitive values... but we do need to be able to
-  represent literals somehow... might have to figure out how this works with
-  intrinsics and such.
-*)
 type value =
   | Bool of bool
   | Num of int
   | Rune of char
-  | String of string
   | Prod of prod
   | Proc of (prod -> Lex.pos -> value)
 
@@ -226,7 +220,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
   | Bool b -> None (Bool b)
   | Num n -> None (Num n)
   | Rune r -> None (Rune r)
-  | String s -> None (String s)
+  | String _s -> raise TODO
 
 and exec_binop pos scopes { Parse.lhs; rhs } op =
   let ctrl = exec_expr { inner = lhs; pos } scopes in
@@ -538,13 +532,6 @@ let%test _ =
   let ast = parse "'r' == 'r'" in
   Bool true = exec_ast ast
 
-let%test_unit _ =
-  let ast = parse {| "foo" == "bar" |} in
-  let f () = exec_ast ast in
-  assert_raises
-    (InvalidBinopOperands (String "foo", String "bar", { row = 1; col = 2 }))
-    f
-
 let%test _ =
   let ast = parse "false != true" in
   Bool true = exec_ast ast
@@ -568,13 +555,6 @@ let%test _ =
 let%test _ =
   let ast = parse "'r' != 'r'" in
   Bool false = exec_ast ast
-
-let%test_unit _ =
-  let ast = parse {| "foo" != "bar" |} in
-  let f () = exec_ast ast in
-  assert_raises
-    (InvalidBinopOperands (String "foo", String "bar", { row = 1; col = 2 }))
-    f
 
 let%test _ =
   let ast = parse "5 <= 5" in
