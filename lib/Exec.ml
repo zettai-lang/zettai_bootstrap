@@ -8,6 +8,7 @@ type value =
   | Rune of char
   | Prod of prod
   | Proc of (prod -> Lex.pos -> value)
+[@@deriving show]
 
 and scope_entry = Pre of value | Val of value | Var of value option ref
 and prod_field = { name : string; entry : scope_entry }
@@ -401,8 +402,30 @@ and exec_loop body scopes =
   | Ret (value, pos) -> Ret (value, pos)
   | _ -> exec_loop body scopes
 
+let intrinsics =
+  [
+    {
+      name = "bsPrintln";
+      entry =
+        Pre
+          (Proc
+             (fun fields pos ->
+               match fields with
+               | [ { name = "value"; entry } ] ->
+                   let value = value_from_scope_entry "value" pos entry in
+                   let () = show_value value |> print_endline in
+                   unit_val
+               | _ ->
+                   raise (InvalidCallArgs ([ (false, "value") ], fields, pos))));
+    };
+  ]
+
+let builtins =
+  let builtins = StringMap.empty in
+  StringMap.add "intrinsics" (Pre (Prod intrinsics)) builtins
+
 let exec_ast ast =
-  let ctrl = exec_expr ast [] in
+  let ctrl = exec_expr ast [ ref builtins ] in
   match ctrl with
   | None value -> value
   | Brk pos | Ctn pos | Ret (_, pos) -> raise (UnexpectedCtrl pos)
