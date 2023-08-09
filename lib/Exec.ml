@@ -10,7 +10,8 @@ type value =
   | Proc of (prod -> Lex.pos -> value)
 
 and scope_entry = Pre of value | Val of value | Var of value option ref
-and prod = { fields : scope_entry StringMap.t; order : string list }
+and prod_field = { name : string; entry : scope_entry }
+and prod = prod_field list
 
 let scope_entry_from_kind kind value =
   match kind with
@@ -27,7 +28,7 @@ let value_from_scope_entry name pos = function
       | Some value -> value
       | None -> raise (UseBeforeInitialization (name, pos)))
 
-let unit_val = Prod { fields = StringMap.empty; order = [] }
+let unit_val = Prod []
 
 type 'a ctrl_of =
   | Brk of Lex.pos
@@ -85,7 +86,6 @@ let rec args_pre_and_name ?(prev_is_pre = false) = function
       raise (NumAsArgumentName pos)
   | { inner = Value' _; pos } :: _ -> raise (ValueAsArgument pos)
 
-exception Unreachable
 exception InvalidBinopOperands of value * value * Lex.pos
 exception InvalidUnaryOperand of value * Lex.pos
 exception InvalidIfCond of value * Lex.pos
@@ -149,7 +149,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
           | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
   | Sum _variants -> raise TODO
   | Prod fields ->
-      let ctrl_of_fields = exec_prod (List.rev fields) scopes in
+      let ctrl_of_fields = exec_prod fields scopes in
       map_ctrl_of (fun fields -> None (Prod fields)) ctrl_of_fields
   | Ident i -> (
       match List.find_map (fun scope -> StringMap.find_opt i !scope) scopes with
@@ -168,32 +168,38 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
           | cond -> raise (InvalidIfCond (cond, pos)))
         ctrl
   | ProcType { args = _; return_type = _ } -> raise TODO
-  (* TODO: typecheck? *)
   | Proc
       { type_' = { args = { inner = args; pos = _ }; return_type = _ }; body }
     ->
       let expected = args_pre_and_name args in
       None
         (Proc
-           (fun { fields; order } call_pos ->
-             if StringMap.cardinal fields != List.length order then
-               raise Unreachable
-             else if
-               StringMap.cardinal fields != List.length expected
+           (fun fields call_pos ->
+             if
+               List.length fields != List.length expected
                || not
                     (List.for_all2
-                       (fun (expected_pre, expected_name) actual_name ->
-                         expected_name = actual_name
+                       (fun (expected_pre, expected_name) actual_field ->
+                         expected_name = actual_field.name
                          &&
-                         match StringMap.find expected_name fields with
+                         match
+                           (List.find
+                              (fun { name; _ } -> name = expected_name)
+                              fields)
+                             .entry
+                         with
                          | Pre _ -> expected_pre
                          | Val _ -> not expected_pre
                          | Var _ -> false)
-                       expected order)
-             then
-               raise (InvalidCallArgs (expected, { fields; order }, call_pos))
+                       expected fields)
+             then raise (InvalidCallArgs (expected, fields, call_pos))
              else
-               let ctrl = exec_block body (ref fields :: scopes) in
+               let fields_scope =
+                 List.fold_left
+                   (fun scope { name; entry } -> StringMap.add name entry scope)
+                   StringMap.empty fields
+               in
+               let ctrl = exec_block body (ref fields_scope :: scopes) in
                match ctrl with
                | None value -> value
                | Brk pos | Ctn pos -> raise (UnexpectedCtrl pos)
@@ -202,9 +208,12 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
       let ctrl = exec_expr { inner = accessed; pos } scopes in
       map_ctrl_of
         (function
-          | Prod { fields; order = _ } -> (
-              match StringMap.find_opt accessor fields with
-              | Some entry -> None (value_from_scope_entry accessor pos entry)
+          | Prod fields -> (
+              match
+                List.find_opt (fun { name; _ } -> name = accessor) fields
+              with
+              | Some { entry; _ } ->
+                  None (value_from_scope_entry accessor pos entry)
               | None -> raise (InvalidField (accessor, accessor_pos)))
           | invalid -> raise (InvalidAccess (invalid, pos)))
         ctrl
@@ -213,7 +222,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
       map_ctrl_of
         (function
           | Proc f ->
-              let ctrl = exec_prod (List.rev args) scopes in
+              let ctrl = exec_prod args scopes in
               map_ctrl_of (fun fields -> None (f fields args_pos)) ctrl
           | invalid -> raise (InvalidCallee (invalid, pos)))
         ctrl
@@ -247,39 +256,44 @@ and exec_uop scopes operand op =
   map_ctrl_of (fun operand -> op operand) ctrl
 
 and exec_prod fields scopes =
-  match fields with
-  | [] -> None { fields = StringMap.empty; order = [] }
-  (* TODO: typecheck? *)
-  | {
-      inner =
-        Decl'
-          {
-            kind' = Some kind;
-            name_or_count = { inner = Ident'' name; pos = _ };
-            type_'' = _;
-            value'' = Some value;
-          };
-      pos;
-    }
-    :: fields ->
-      let ctrl = exec_prod fields scopes in
-      map_ctrl_of
-        (fun { fields; order } ->
-          let () =
-            match StringMap.find_opt name fields with
-            | Some _ -> raise (Redeclaration (name, pos))
-            | None -> ()
-          in
-          let ctrl = exec_expr value scopes in
-          map_ctrl_of
-            (fun value ->
-              let entry = scope_entry_from_kind kind value in
-              let fields = StringMap.add name entry fields in
-              let order = order @ [ name ] in
-              None { fields; order })
-            ctrl)
-        ctrl
-  | _ -> raise TODO
+  let _, ctrl =
+    List.fold_left
+      (fun (prev_kind, ctrl) { Parse.inner = field; pos } ->
+        match ctrl with
+        | None fields -> (
+            match field with
+            | Parse.Decl'
+                {
+                  kind';
+                  name_or_count = { inner = Ident'' name; _ };
+                  value'' = Some value;
+                  _;
+                } -> (
+                let kind = Option.value kind' ~default:prev_kind in
+                let ctrl = exec_expr value scopes in
+                let () =
+                  match
+                    List.find_opt
+                      (fun { name = existing_name; _ } -> existing_name = name)
+                      fields
+                  with
+                  | Some { name; _ } -> raise (Redeclaration (name, pos))
+                  | None -> ()
+                in
+                match ctrl with
+                | None value ->
+                    let entry = scope_entry_from_kind kind value in
+                    (kind, None (fields @ [ { name; entry } ]))
+                | Brk pos -> (kind, Brk pos)
+                | Ctn pos -> (kind, Ctn pos)
+                | Ret (value, pos) -> (kind, Ret (value, pos)))
+            | _ -> raise TODO)
+        | Brk pos -> (prev_kind, Brk pos)
+        | Ctn pos -> (prev_kind, Ctn pos)
+        | Ret (value, pos) -> (prev_kind, Ret (value, pos)))
+      (Parse.Val, None []) fields
+  in
+  ctrl
 
 and exec_block stmts scopes =
   match stmts with
@@ -310,7 +324,6 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
           let ctrl = exec_expr value scopes in
           map_ctrl_of (fun value -> Ret (Some value, pos)) ctrl
       | None -> Ret (None, pos))
-  (* TODO: typecheck? *)
   | Decl
       {
         kind = { inner = kind; pos = _ };
@@ -368,9 +381,11 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
           let ctrl = exec_expr { inner = accessed; pos } scopes in
           map_ctrl_of
             (function
-              | Prod { fields; order = _ } -> (
-                  match StringMap.find_opt accessor fields with
-                  | Some field -> try_scope_entry_assign field scopes
+              | Prod fields -> (
+                  match
+                    List.find_opt (fun { name; _ } -> name = accessor) fields
+                  with
+                  | Some { entry; _ } -> try_scope_entry_assign entry scopes
                   | None -> raise (InvalidField (accessor, accessor_pos)))
               | invalid -> raise (InvalidAccess (invalid, pos)))
             ctrl)
@@ -625,15 +640,11 @@ let%test _ =
 
 let%test _ =
   let ast = parse "(pre n = 5)" in
-  let fields = StringMap.empty in
-  let fields = StringMap.add "n" (Pre (Num 5)) fields in
-  Prod { fields; order = [ "n" ] } = exec_ast ast
+  Prod [ { name = "n"; entry = Pre (Num 5) } ] = exec_ast ast
 
 let%test _ =
   let ast = parse "(val i = 9)" in
-  let fields = StringMap.empty in
-  let fields = StringMap.add "i" (Val (Num 9)) fields in
-  Prod { fields; order = [ "i" ] } = exec_ast ast
+  Prod [ { name = "i"; entry = Val (Num 9) } ] = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "(val i = 9, val i = 9)" in
@@ -642,11 +653,13 @@ let%test_unit _ =
 
 let%test _ =
   let ast = parse "(pre i = 9, val j = 'a', var k = true)" in
-  let fields = StringMap.empty in
-  let fields = StringMap.add "i" (Pre (Num 9)) fields in
-  let fields = StringMap.add "j" (Val (Rune 'a')) fields in
-  let fields = StringMap.add "k" (Var (ref (Some (Bool true)))) fields in
-  Prod { fields; order = [ "i"; "j"; "k" ] } = exec_ast ast
+  Prod
+    [
+      { name = "i"; entry = Pre (Num 9) };
+      { name = "j"; entry = Val (Rune 'a') };
+      { name = "k"; entry = Var (ref (Some (Bool true))) };
+    ]
+  = exec_ast ast
 
 let%test _ =
   let ast = parse "(pre i = 9).i" in
@@ -695,31 +708,28 @@ let%test _ =
 let%test_unit _ =
   let ast = parse "{ proc(pre i: Nat) { i } }(val i = 2)" in
   let f () = exec_ast ast in
-  let fields = StringMap.empty in
-  let fields = StringMap.add "i" (Val (Num 2)) fields in
   assert_raises
     (InvalidCallArgs
-       ([ (true, "i") ], { fields; order = [ "i" ] }, { row = 1; col = 27 }))
+       ( [ (true, "i") ],
+         [ { name = "i"; entry = Val (Num 2) } ],
+         { row = 1; col = 27 } ))
     f
 
 let%test_unit _ =
   let ast = parse "{ proc(pre i: Nat) { i } }(var i = 2)" in
   let f () = exec_ast ast in
-  let fields = StringMap.empty in
-  let fields = StringMap.add "i" (Var (ref (Some (Num 2)))) fields in
   assert_raises
     (InvalidCallArgs
-       ([ (true, "i") ], { fields; order = [ "i" ] }, { row = 1; col = 27 }))
+       ( [ (true, "i") ],
+         [ { name = "i"; entry = Var (ref (Some (Num 2))) } ],
+         { row = 1; col = 27 } ))
     f
 
 let%test_unit _ =
   let ast = parse "{ proc(val i: Nat) { i } }()" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidCallArgs
-       ( [ (false, "i") ],
-         { fields = StringMap.empty; order = [] },
-         { row = 1; col = 27 } ))
+    (InvalidCallArgs ([ (false, "i") ], [], { row = 1; col = 27 }))
     f
 
 let%test_unit _ =
