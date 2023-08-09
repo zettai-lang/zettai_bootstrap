@@ -407,7 +407,7 @@ let exec_ast ast =
   | None value -> value
   | Brk pos | Ctn pos | Ret (_, pos) -> raise (UnexpectedCtrl pos)
 
-let exec path _args =
+let exec path =
   let text = Core.In_channel.read_lines path in
   let ast = String.concat "\n" text |> Parse.parse in
   let _ = exec_ast ast in
