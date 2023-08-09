@@ -16,7 +16,7 @@
         duneVersion = "3";
 
         checkInputs = buildInputs ++ [ final.ocamlPackages.ppx_inline_test ];
-        buildInputs = with final.ocamlPackages; [ core ppx_deriving ];
+        buildInputs = with final.ocamlPackages; [ core ounit2 ppx_deriving ];
 
         src = builtins.path { path = ./.; name = "zettai_bootstrap-src"; };
       };
