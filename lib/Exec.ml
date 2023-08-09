@@ -407,10 +407,16 @@ let exec_ast ast =
   | None value -> value
   | Brk pos | Ctn pos | Ret (_, pos) -> raise (UnexpectedCtrl pos)
 
+exception ExpectedProc
+
 let exec path =
   let text = Core.In_channel.read_lines path in
   let ast = String.concat "\n" text |> Parse.parse in
-  let _ = exec_ast ast in
+  let _ =
+    match exec_ast ast with
+    | Proc f -> f [] { row = 0; col = 0 }
+    | _ -> raise ExpectedProc
+  in
   ()
 
 let assert_raises = OUnit2.assert_raises
