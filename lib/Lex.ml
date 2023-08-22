@@ -323,6 +323,25 @@ let%test_unit _ =
   let f () = state_from "ff'" |> lex_rune_rest in
   assert_raises (UnterminatedRune { row = 1; col = 2 }) f
 
+let rec lex_comment_rest state : state =
+  with_advanced_or state state (fun head advanced ->
+      match head with '\n' -> advanced | _ -> lex_comment_rest advanced)
+
+let%test_unit _ =
+  [%test_result: state]
+    (state_from "" |> lex_comment_rest)
+    ~expect:{ text = ""; pos = { row = 1; col = 1 } }
+
+let%test_unit _ =
+  [%test_result: state]
+    (state_from "\n foo bar" |> lex_comment_rest)
+    ~expect:{ text = " foo bar"; pos = { row = 2; col = 1 } }
+
+let%test_unit _ =
+  [%test_result: state]
+    (state_from "asdf65**+%*-89651\n foo bar" |> lex_comment_rest)
+    ~expect:{ text = " foo bar"; pos = { row = 2; col = 1 } }
+
 exception UnexpectedChar of char * pos
 
 let () =
@@ -395,6 +414,7 @@ let rec lex' s =
         | ':' -> ([ (Colon, s.pos) ], advanced)
         | '.' -> ([ (Dot, s.pos) ], advanced)
         | ',' -> ([ (Comma, s.pos) ], advanced)
+        | '#' -> ([], lex_comment_rest advanced)
         | u -> raise (UnexpectedChar (u, s.pos))
       in
       let { tokens = tokens_rest; end_pos } = lex' after in
@@ -530,6 +550,14 @@ let%expect_test _ =
     {|
       { Lex.tokens = [(Lex.Colon, 1:1); (Lex.Dot, 1:3); (Lex.Comma, 1:5)];
         end_pos = 1:6 }
+    |}]
+
+let%expect_test _ =
+  lex "foo # comment\nbar" |> show_lex_result |> print_endline;
+  [%expect
+    {|
+      { Lex.tokens = [((Lex.Ident "foo"), 1:1); ((Lex.Ident "bar"), 2:1)];
+        end_pos = 2:4 }
     |}]
 
 let%test_unit _ =
