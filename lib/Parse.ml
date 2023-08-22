@@ -103,6 +103,14 @@ let kind_from_keywd = function
 
 exception UnexpectedToken of Lex.token * pos
 
+let () =
+  Printexc.register_printer (function
+    | UnexpectedToken (token, { row; col }) ->
+        Some
+          (Printf.sprintf "%d:%d: unexpected token: %s" row col
+             (Lex.show_token token))
+    | _ -> None)
+
 let rec parse_expr tl =
   let (t, pos), tl = expect_advanced tl in
   let lhs, tl =

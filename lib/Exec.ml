@@ -19,6 +19,14 @@ let scope_entry_from_kind kind value =
 
 exception UseBeforeInitialization of string * Lex.pos
 
+let () =
+  Printexc.register_printer (function
+    | UseBeforeInitialization (name, { row; col }) ->
+        Some
+          (Printf.sprintf "%d:%d: use of \"%s\" before initialization" row col
+             name)
+    | _ -> None)
+
 let value_from_scope_entry name pos = function
   | Val value -> value
   | Var value_ref -> (
@@ -41,8 +49,30 @@ let map_ctrl_of f = function
   | None a -> f a
 
 exception NumAsArgumentName of Lex.pos
+
+let () =
+  Printexc.register_printer (function
+    | NumAsArgumentName { row; col } ->
+        Some (Printf.sprintf "%d:%d: number specified as argument name" row col)
+    | _ -> None)
+
 exception ValueAsArgument of Lex.pos
+
+let () =
+  Printexc.register_printer (function
+    | ValueAsArgument { row; col } ->
+        Some
+          (Printf.sprintf "%d:%d: value specified in function declaration" row
+             col)
+    | _ -> None)
+
 exception VarArgument of Lex.pos
+
+let () =
+  Printexc.register_printer (function
+    | VarArgument { row; col } ->
+        Some (Printf.sprintf "%d:%d: argument specified as var" row col)
+    | _ -> None)
 
 let rec args_names = function
   | [] -> []
@@ -82,6 +112,13 @@ exception InvalidUnaryOperand of value * Lex.pos
 exception InvalidIfCond of value * Lex.pos
 exception UninitializedVal of string * Lex.pos
 exception UnboundIdent of string * Lex.pos
+
+let () =
+  Printexc.register_printer (function
+    | UnboundIdent (name, { row; col }) ->
+        Some (Printf.sprintf "%d:%d: unbound ident: \"%s\"" row col name)
+    | _ -> None)
+
 exception Redeclaration of string * Lex.pos
 exception ImmutableAssign of Parse.ident_or_field * Lex.pos
 exception InvalidAccess of value * Lex.pos

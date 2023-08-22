@@ -324,6 +324,13 @@ let%test_unit _ =
   assert_raises (UnterminatedRune { row = 1; col = 2 }) f
 
 exception UnexpectedChar of char * pos
+
+let () =
+  Printexc.register_printer (function
+    | UnexpectedChar (char, { row; col }) ->
+        Some (Printf.sprintf "%d:%d: unexpected char: %C" row col char)
+    | _ -> None)
+
 exception UnterminatedAnd of pos
 exception UnterminatedOr of pos
 
