@@ -1,5 +1,5 @@
 type 'a with_pos = { inner : 'a; pos : Lex.pos }
-type kind = Pre | Val | Var
+type kind = Val | Var
 
 type stmt =
   | Brk

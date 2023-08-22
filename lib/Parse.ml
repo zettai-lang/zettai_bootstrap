@@ -1,7 +1,7 @@
 let assert_raises = OUnit2.assert_raises
 
 type 'a with_pos = { inner : 'a; pos : Lex.pos } [@@deriving show]
-type kind = Pre | Val | Var [@@deriving show]
+type kind = Val | Var [@@deriving show]
 
 type stmt =
   | Brk
@@ -97,8 +97,7 @@ let expect_advanced tl =
 let rec drop_nls = function (Lex.Nl, _) :: xs -> drop_nls xs | o -> o
 
 let kind_from_keywd = function
-  | Lex.Pre -> Some Pre
-  | Val -> Some Val
+  | Lex.Val -> Some Val
   | Var -> Some Var
   | _ -> None
 
@@ -1088,14 +1087,14 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ pre foo }" |> show_ast |> print_endline;
+  parse "{ val foo }" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.Block
          [{ Parse.inner =
             (Parse.Decl
-               { Parse.kind = { Parse.inner = Parse.Pre; pos = 1:3 };
+               { Parse.kind = { Parse.inner = Parse.Val; pos = 1:3 };
                  name = { Parse.inner = "foo"; pos = 1:7 }; type_ = None;
                  value = None });
             pos = 1:3 }
@@ -1104,11 +1103,11 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ pre" in
+  let f () = parse "{ val" in
   assert_raises (UnexpectedEOF { row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let f () = parse "{ pre." in
+  let f () = parse "{ val." in
   assert_raises (UnexpectedToken (Dot, { row = 1; col = 6 })) f
 
 let%expect_test _ =
@@ -1222,7 +1221,7 @@ let%expect_test _ =
   {
     val bar: Nat = 9
 
-    pre baz: Nat = 9
+    val baz: Nat = 9
 
   }
   |}
@@ -1240,7 +1239,7 @@ let%expect_test _ =
             pos = 3:5 };
            { Parse.inner =
              (Parse.Decl
-                { Parse.kind = { Parse.inner = Parse.Pre; pos = 5:5 };
+                { Parse.kind = { Parse.inner = Parse.Val; pos = 5:5 };
                   name = { Parse.inner = "baz"; pos = 5:9 };
                   type_ =
                   (Some { Parse.inner = (Parse.Ident "Nat"); pos = 5:14 });
@@ -1368,7 +1367,7 @@ let%test_unit _ =
   assert_raises (UnexpectedEOF { row = 1; col = 5 }) f
 
 let%test_unit _ =
-  let f () = parse "(pre ]" in
+  let f () = parse "(val ]" in
   assert_raises (UnexpectedToken (CloseSquareBrkt, { row = 1; col = 6 })) f
 
 let%expect_test _ =
@@ -1488,28 +1487,28 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(pre foo, pre bar, pre baz)" |> show_ast |> print_endline;
+  parse "(val foo, val bar, val baz)" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.Prod
          [{ Parse.inner =
             (Parse.Decl'
-               { Parse.kind' = (Some Parse.Pre);
+               { Parse.kind' = (Some Parse.Val);
                  name_or_count =
                  { Parse.inner = (Parse.Ident'' "foo"); pos = 1:6 };
                  type_'' = None; value'' = None });
             pos = 1:2 };
            { Parse.inner =
              (Parse.Decl'
-                { Parse.kind' = (Some Parse.Pre);
+                { Parse.kind' = (Some Parse.Val);
                   name_or_count =
                   { Parse.inner = (Parse.Ident'' "bar"); pos = 1:15 };
                   type_'' = None; value'' = None });
              pos = 1:11 };
            { Parse.inner =
              (Parse.Decl'
-                { Parse.kind' = (Some Parse.Pre);
+                { Parse.kind' = (Some Parse.Val);
                   name_or_count =
                   { Parse.inner = (Parse.Ident'' "baz"); pos = 1:24 };
                   type_'' = None; value'' = None });
@@ -1519,7 +1518,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(pre foo: Nat = 7, val bar: Bool = false, var baz: Str = \"baz\",)"
+  parse "(val foo: Nat = 7, val bar: Bool = false, var baz: Str = \"baz\",)"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -1527,7 +1526,7 @@ let%expect_test _ =
       (Parse.Prod
          [{ Parse.inner =
             (Parse.Decl'
-               { Parse.kind' = (Some Parse.Pre);
+               { Parse.kind' = (Some Parse.Val);
                  name_or_count =
                  { Parse.inner = (Parse.Ident'' "foo"); pos = 1:6 };
                  type_'' =

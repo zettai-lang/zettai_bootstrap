@@ -10,20 +10,17 @@ type value =
   | Proc of (prod -> Lex.pos -> value)
 [@@deriving show]
 
-and scope_entry = Pre of value | Val of value | Var of value option ref
+and scope_entry = Val of value | Var of value option ref
 and prod_field = { name : string; entry : scope_entry }
 and prod = prod_field list
 
 let scope_entry_from_kind kind value =
-  match kind with
-  | Parse.Pre -> Pre value
-  | Val -> Val value
-  | Var -> Var (ref (Some value))
+  match kind with Parse.Val -> Val value | Var -> Var (ref (Some value))
 
 exception UseBeforeInitialization of string * Lex.pos
 
 let value_from_scope_entry name pos = function
-  | Pre value | Val value -> value
+  | Val value -> value
   | Var value_ref -> (
       match !value_ref with
       | Some value -> value
@@ -47,7 +44,7 @@ exception NumAsArgumentName of Lex.pos
 exception ValueAsArgument of Lex.pos
 exception VarArgument of Lex.pos
 
-let rec args_pre_and_name ?(prev_is_pre = false) = function
+let rec args_names = function
   | [] -> []
   | {
       Parse.inner =
@@ -61,17 +58,10 @@ let rec args_pre_and_name ?(prev_is_pre = false) = function
       pos;
     }
     :: fields ->
-      let kind =
-        Option.map
-          (fun kind ->
-            match kind with
-            | Parse.Pre -> true
-            | Val -> false
-            | Var -> raise (VarArgument pos))
-          kind'
+      let () =
+        match kind' with Some Parse.Var -> raise (VarArgument pos) | _ -> ()
       in
-      let pre = Option.value kind ~default:prev_is_pre in
-      (pre, name) :: args_pre_and_name fields ~prev_is_pre:pre
+      name :: args_names fields
   | {
       inner =
         Decl'
@@ -90,14 +80,13 @@ let rec args_pre_and_name ?(prev_is_pre = false) = function
 exception InvalidBinopOperands of value * value * Lex.pos
 exception InvalidUnaryOperand of value * Lex.pos
 exception InvalidIfCond of value * Lex.pos
-exception UninitializedPre of string * Lex.pos
 exception UninitializedVal of string * Lex.pos
 exception UnboundIdent of string * Lex.pos
 exception Redeclaration of string * Lex.pos
 exception ImmutableAssign of Parse.ident_or_field * Lex.pos
 exception InvalidAccess of value * Lex.pos
 exception InvalidField of string * Lex.pos
-exception InvalidCallArgs of (bool * string) list * prod * Lex.pos
+exception InvalidCallArgs of string list * prod * Lex.pos
 exception InvalidCallee of value * Lex.pos
 exception UnexpectedCtrl of Lex.pos
 
@@ -172,7 +161,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
   | Proc
       { type_' = { args = { inner = args; pos = _ }; return_type = _ }; body }
     ->
-      let expected = args_pre_and_name args in
+      let expected = args_names args in
       None
         (Proc
            (fun fields call_pos ->
@@ -180,7 +169,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
                List.length fields != List.length expected
                || not
                     (List.for_all2
-                       (fun (expected_pre, expected_name) actual_field ->
+                       (fun expected_name actual_field ->
                          expected_name = actual_field.name
                          &&
                          match
@@ -189,8 +178,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
                               fields)
                              .entry
                          with
-                         | Pre _ -> expected_pre
-                         | Val _ -> not expected_pre
+                         | Val _ -> true
                          | Var _ -> false)
                        expected fields)
              then raise (InvalidCallArgs (expected, fields, call_pos))
@@ -347,7 +335,6 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
               scope := StringMap.add name entry !scope;
               None ())
             ctrl
-      | Pre, None -> raise (UninitializedPre (name, pos))
       | Val, None -> raise (UninitializedVal (name, pos))
       | Var, None ->
           let scope = List.hd scopes in
@@ -407,7 +394,7 @@ let intrinsics =
     {
       name = "bsPrintln";
       entry =
-        Pre
+        Val
           (Proc
              (fun fields pos ->
                match fields with
@@ -415,14 +402,13 @@ let intrinsics =
                    let value = value_from_scope_entry "value" pos entry in
                    let () = show_value value |> print_endline in
                    unit_val
-               | _ ->
-                   raise (InvalidCallArgs ([ (false, "value") ], fields, pos))));
+               | _ -> raise (InvalidCallArgs ([ "value" ], fields, pos))));
     };
   ]
 
 let builtins =
   let builtins = StringMap.empty in
-  StringMap.add "intrinsics" (Pre (Prod intrinsics)) builtins
+  StringMap.add "intrinsics" (Val (Prod intrinsics)) builtins
 
 let exec_ast ast =
   let ctrl = exec_expr ast [ ref builtins ] in
@@ -668,10 +654,6 @@ let%test _ =
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "(pre n = 5)" in
-  Prod [ { name = "n"; entry = Pre (Num 5) } ] = exec_ast ast
-
-let%test _ =
   let ast = parse "(val i = 9)" in
   Prod [ { name = "i"; entry = Val (Num 9) } ] = exec_ast ast
 
@@ -681,29 +663,29 @@ let%test_unit _ =
   assert_raises (Redeclaration ("i", { row = 1; col = 13 })) f
 
 let%test _ =
-  let ast = parse "(pre i = 9, val j = 'a', var k = true)" in
+  let ast = parse "(val i = 9, val j = 'a', var k = true)" in
   Prod
     [
-      { name = "i"; entry = Pre (Num 9) };
+      { name = "i"; entry = Val (Num 9) };
       { name = "j"; entry = Val (Rune 'a') };
       { name = "k"; entry = Var (ref (Some (Bool true))) };
     ]
   = exec_ast ast
 
 let%test _ =
-  let ast = parse "(pre i = 9).i" in
+  let ast = parse "(val i = 9).i" in
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "(pre i = 9, val j = 'a', var k = true).j" in
+  let ast = parse "(val i = 9, val j = 'a', var k = true).j" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
-  let ast = parse "(pre i = 9, val j = 'a', var k = true).k" in
+  let ast = parse "(val i = 9, val j = 'a', var k = true).k" in
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "(pre i = 9, val j = 'a', var k = true).k" in
+  let ast = parse "(val i = 9, val j = 'a', var k = true).k" in
   Bool true = exec_ast ast
 
 let%test_unit _ =
@@ -726,40 +708,26 @@ let%test _ =
 
 let%test _ =
   let ast =
-    parse "{ proc(pre i: Nat, val j: Nat) { i * j } }(pre i = 2, val j = 9)"
+    parse "{ proc(val i: Nat, val j: Nat) { i * j } }(val i = 2, val j = 9)"
   in
   Num 18 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc(pre i, j: Nat) { i * j } }(pre i = 2, pre j = 9)" in
+  let ast = parse "{ proc(val i, j: Nat) { i * j } }(val i = 2, val j = 9)" in
   Num 18 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "{ proc(pre i: Nat) { i } }(val i = 2)" in
+  let ast = parse "{ proc(val i: Nat) { i } }(val j = 2)" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidCallArgs
-       ( [ (true, "i") ],
-         [ { name = "i"; entry = Val (Num 2) } ],
-         { row = 1; col = 27 } ))
-    f
-
-let%test_unit _ =
-  let ast = parse "{ proc(pre i: Nat) { i } }(var i = 2)" in
-  let f () = exec_ast ast in
-  assert_raises
-    (InvalidCallArgs
-       ( [ (true, "i") ],
-         [ { name = "i"; entry = Var (ref (Some (Num 2))) } ],
-         { row = 1; col = 27 } ))
+       ([ "i" ], [ { name = "j"; entry = Val (Num 2) } ], { row = 1; col = 27 }))
     f
 
 let%test_unit _ =
   let ast = parse "{ proc(val i: Nat) { i } }()" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidCallArgs ([ (false, "i") ], [], { row = 1; col = 27 }))
-    f
+  assert_raises (InvalidCallArgs ([ "i" ], [], { row = 1; col = 27 })) f
 
 let%test_unit _ =
   let ast = parse "proc(var i: Nat) { i }" in
@@ -929,11 +897,6 @@ let%test_unit _ =
   in
   let f () = exec_ast ast in
   assert_raises (Redeclaration ("i", { row = 5; col = 9 })) f
-
-let%test_unit _ =
-  let ast = parse "{ proc() { pre i } }()" in
-  let f () = exec_ast ast in
-  assert_raises (UninitializedPre ("i", { row = 1; col = 12 })) f
 
 let%test_unit _ =
   let ast = parse "{ proc() { val i } }()" in
