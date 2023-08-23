@@ -46,7 +46,6 @@ and expr =
   | Proc of proc
   | Field of field
   | Call of call
-  | Bool of bool
   | Num of int
   | Rune of char
   | String of string
@@ -148,7 +147,6 @@ let rec parse_expr tl =
                 (Proc { type_'; body }, tl)
             | _ -> (ProcType { args; return_type }, tl))
         | (u, pos) :: _ -> raise (UnexpectedToken (u, pos)))
-    | Bool b -> (Bool b, tl)
     | Num n -> (Num n, tl)
     | String s -> (String s, tl)
     | Rune c -> (Rune c, tl)
@@ -608,14 +606,6 @@ let parse text =
   with PreUnexpectedEOF -> raise (UnexpectedEOF lr.end_pos)
 
 let%expect_test _ =
-  parse "true" |> show_ast |> print_endline;
-  [%expect {| { Parse.inner = (Parse.Bool true); pos = 1:1 } |}]
-
-let%expect_test _ =
-  parse "false" |> show_ast |> print_endline;
-  [%expect {| { Parse.inner = (Parse.Bool false); pos = 1:1 } |}]
-
-let%expect_test _ =
   parse "0" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Num 0); pos = 1:1 } |}]
 
@@ -652,13 +642,13 @@ let%test_unit _ =
   assert_raises (UnexpectedEOF { row = 3; col = 3 }) f
 
 let%expect_test _ =
-  parse "true || false" |> show_ast |> print_endline;
+  parse "True || False" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.Or
-         { Parse.lhs = (Parse.Bool true);
-           rhs = { Parse.inner = (Parse.Bool false); pos = 1:9 } });
+         { Parse.lhs = (Parse.Ident "True");
+           rhs = { Parse.inner = (Parse.Ident "False"); pos = 1:9 } });
       pos = 1:1 }
   |}]
 
@@ -781,11 +771,11 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "!false" |> show_ast |> print_endline;
+  parse "!False" |> show_ast |> print_endline;
   [%expect
     {|
-    { Parse.inner = (Parse.Not { Parse.inner = (Parse.Bool false); pos = 1:2 });
-      pos = 1:1 }
+    { Parse.inner =
+      (Parse.Not { Parse.inner = (Parse.Ident "False"); pos = 1:2 }); pos = 1:1 }
   |}]
 
 let%test_unit _ =
@@ -793,36 +783,37 @@ let%test_unit _ =
   assert_raises (UnexpectedToken (Num 5, { row = 1; col = 3 })) f
 
 let%expect_test _ =
-  parse "if true false" |> show_ast |> print_endline;
+  parse "if True False" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.If
-         { Parse.cond = { Parse.inner = (Parse.Bool true); pos = 1:4 };
-           if_branch = { Parse.inner = (Parse.Bool false); pos = 1:9 };
+         { Parse.cond = { Parse.inner = (Parse.Ident "True"); pos = 1:4 };
+           if_branch = { Parse.inner = (Parse.Ident "False"); pos = 1:9 };
            else_branch = None });
       pos = 1:1 }
   |}]
 
 let%expect_test _ =
-  parse "if true false else true" |> show_ast |> print_endline;
+  parse "if True False else True" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.If
-         { Parse.cond = { Parse.inner = (Parse.Bool true); pos = 1:4 };
-           if_branch = { Parse.inner = (Parse.Bool false); pos = 1:9 };
-           else_branch = (Some { Parse.inner = (Parse.Bool true); pos = 1:20 }) });
+         { Parse.cond = { Parse.inner = (Parse.Ident "True"); pos = 1:4 };
+           if_branch = { Parse.inner = (Parse.Ident "False"); pos = 1:9 };
+           else_branch =
+           (Some { Parse.inner = (Parse.Ident "True"); pos = 1:20 }) });
       pos = 1:1 }
   |}]
 
 let%expect_test _ =
-  parse "if true { i = 1 } else { i = 2 }" |> show_ast |> print_endline;
+  parse "if True { i = 1 } else { i = 2 }" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.If
-         { Parse.cond = { Parse.inner = (Parse.Bool true); pos = 1:4 };
+         { Parse.cond = { Parse.inner = (Parse.Ident "True"); pos = 1:4 };
            if_branch =
            { Parse.inner =
              (Parse.Block
@@ -849,12 +840,12 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "if true { i = 1 } else if false { i = 2 }" |> show_ast |> print_endline;
+  parse "if True { i = 1 } else if False { i = 2 }" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.If
-         { Parse.cond = { Parse.inner = (Parse.Bool true); pos = 1:4 };
+         { Parse.cond = { Parse.inner = (Parse.Ident "True"); pos = 1:4 };
            if_branch =
            { Parse.inner =
              (Parse.Block
@@ -869,7 +860,7 @@ let%expect_test _ =
            (Some { Parse.inner =
                    (Parse.If
                       { Parse.cond =
-                        { Parse.inner = (Parse.Bool false); pos = 1:27 };
+                        { Parse.inner = (Parse.Ident "False"); pos = 1:27 };
                         if_branch =
                         { Parse.inner =
                           (Parse.Block
@@ -889,13 +880,13 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "if true { i = 1 } else if false { i = 2 } else { i = 3 }"
+  parse "if True { i = 1 } else if False { i = 2 } else { i = 3 }"
   |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.If
-         { Parse.cond = { Parse.inner = (Parse.Bool true); pos = 1:4 };
+         { Parse.cond = { Parse.inner = (Parse.Ident "True"); pos = 1:4 };
            if_branch =
            { Parse.inner =
              (Parse.Block
@@ -910,7 +901,7 @@ let%expect_test _ =
            (Some { Parse.inner =
                    (Parse.If
                       { Parse.cond =
-                        { Parse.inner = (Parse.Bool false); pos = 1:27 };
+                        { Parse.inner = (Parse.Ident "False"); pos = 1:27 };
                         if_branch =
                         { Parse.inner =
                           (Parse.Block
@@ -949,16 +940,17 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ true }    " |> show_ast |> print_endline;
+  parse "{ True }    " |> show_ast |> print_endline;
   [%expect
     {|
       { Parse.inner =
-        (Parse.Block [{ Parse.inner = (Parse.Expr (Parse.Bool true)); pos = 1:3 }]);
+        (Parse.Block
+           [{ Parse.inner = (Parse.Expr (Parse.Ident "True")); pos = 1:3 }]);
         pos = 1:1 }
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ true   " in
+  let f () = parse "{ True   " in
   assert_raises (UnexpectedEOF { row = 1; col = 10 }) f
 
 let%expect_test _ =
@@ -1526,7 +1518,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(val foo: Nat = 7, val bar: Bool = false, mut baz: Str = \"baz\",)"
+  parse "(val foo: Nat = 7, val bar: Bool = False, mut baz: Str = \"baz\",)"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -1549,7 +1541,7 @@ let%expect_test _ =
                   type_'' =
                   (Some { Parse.inner = (Parse.Ident "Bool"); pos = 1:29 });
                   value'' =
-                  (Some { Parse.inner = (Parse.Bool false); pos = 1:36 }) });
+                  (Some { Parse.inner = (Parse.Ident "False"); pos = 1:36 }) });
              pos = 1:20 };
            { Parse.inner =
              (Parse.Decl'
@@ -1622,7 +1614,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "proc(): { if false Nat else Int } { 1 }" |> show_ast |> print_endline;
+  parse "proc(): { if False Nat else Int } { 1 }" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1636,8 +1628,8 @@ let%expect_test _ =
                            (Parse.Expr
                               (Parse.If
                                  { Parse.cond =
-                                   { Parse.inner = (Parse.Bool false); pos = 1:14
-                                     };
+                                   { Parse.inner = (Parse.Ident "False");
+                                     pos = 1:14 };
                                    if_branch =
                                    { Parse.inner = (Parse.Ident "Nat");
                                      pos = 1:20 };

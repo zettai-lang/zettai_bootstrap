@@ -3,6 +3,7 @@ exception TODO
 module StringMap = Map.Make (String)
 
 type value =
+  (* TODO: replace this with a Sum value once that's implemented *)
   | Bool of bool
   | Num of int
   | Rune of char
@@ -252,7 +253,6 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
               map_ctrl_of (fun fields -> None (f fields args_pos)) ctrl
           | invalid -> raise (InvalidCallee (invalid, pos)))
         ctrl
-  | Bool b -> None (Bool b)
   | Num n -> None (Num n)
   | Rune r -> None (Rune r)
   | String _s -> raise TODO
@@ -445,6 +445,8 @@ let intrinsics =
 
 let builtins =
   let builtins = StringMap.empty in
+  let builtins = StringMap.add "False" (Val (Bool false)) builtins in
+  let builtins = StringMap.add "True" (Val (Bool true)) builtins in
   StringMap.add "intrinsics" (Val (Prod intrinsics)) builtins
 
 let exec_ast ast =
@@ -473,7 +475,7 @@ let%test _ =
   Num 14 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "false + true" in
+  let ast = parse "False + True" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
@@ -484,7 +486,7 @@ let%test _ =
   Num (-4) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "false - true" in
+  let ast = parse "False - True" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
@@ -495,7 +497,7 @@ let%test _ =
   Num 45 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "false * true" in
+  let ast = parse "False * True" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
@@ -506,7 +508,7 @@ let%test _ =
   Num 0 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "false / true" in
+  let ast = parse "False / True" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
@@ -517,18 +519,18 @@ let%test _ =
   Num 5 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "false % true" in
+  let ast = parse "False % True" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
-  let ast = parse "true && false" in
+  let ast = parse "True && False" in
   Bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "true && true" in
+  let ast = parse "True && True" in
   Bool true = exec_ast ast
 
 let%test_unit _ =
@@ -537,15 +539,15 @@ let%test_unit _ =
   assert_raises (InvalidBinopOperands (Num 5, Num 9, { row = 1; col = 1 })) f
 
 let%test _ =
-  let ast = parse "false || true" in
+  let ast = parse "False || True" in
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "true || false" in
+  let ast = parse "True || False" in
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "false || false" in
+  let ast = parse "False || False" in
   Bool false = exec_ast ast
 
 let%test_unit _ =
@@ -554,11 +556,11 @@ let%test_unit _ =
   assert_raises (InvalidBinopOperands (Num 5, Num 9, { row = 1; col = 1 })) f
 
 let%test _ =
-  let ast = parse "!false" in
+  let ast = parse "!False" in
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "!true" in
+  let ast = parse "!True" in
   Bool false = exec_ast ast
 
 let%test_unit _ =
@@ -571,16 +573,16 @@ let%test _ =
   Num (-5) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "-false" in
+  let ast = parse "-False" in
   let f () = exec_ast ast in
   assert_raises (InvalidUnaryOperand (Bool false, { row = 1; col = 1 })) f
 
 let%test _ =
-  let ast = parse "false == true" in
+  let ast = parse "False == True" in
   Bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "true == true" in
+  let ast = parse "True == True" in
   Bool true = exec_ast ast
 
 let%test _ =
@@ -600,11 +602,11 @@ let%test _ =
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "false != true" in
+  let ast = parse "False != True" in
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "true != true" in
+  let ast = parse "True != True" in
   Bool false = exec_ast ast
 
 let%test _ =
@@ -640,7 +642,7 @@ let%test _ =
   Bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "false <= true" in
+  let ast = parse "False <= True" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
@@ -663,22 +665,22 @@ let%test _ =
   Bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "false < true" in
+  let ast = parse "False < True" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
-  let ast = parse "if true 5 else 9" in
+  let ast = parse "if True 5 else 9" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if false 5 else 9" in
+  let ast = parse "if False 5 else 9" in
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if false 5" in
+  let ast = parse "if False 5" in
   unit_val = exec_ast ast
 
 let%test_unit _ =
@@ -700,7 +702,7 @@ let%test_unit _ =
   assert_raises (Redeclaration ("i", { row = 1; col = 13 })) f
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true)" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True)" in
   Prod
     [
       { name = "i"; entry = Val (Num 9) };
@@ -714,15 +716,15 @@ let%test _ =
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true).j" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).j" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
   Bool true = exec_ast ast
 
 let%test_unit _ =
@@ -777,7 +779,7 @@ let%test_unit _ =
   assert_raises (NumAsArgumentName { row = 1; col = 10 }) f
 
 let%test_unit _ =
-  let ast = parse "proc(true) { }" in
+  let ast = parse "proc('a') { }" in
   let f () = exec_ast ast in
   assert_raises (ValueAsArgument { row = 1; col = 6 }) f
 
@@ -825,20 +827,20 @@ let%test _ =
       {|
     {
       proc() {
-        mut b = false
+        mut b = False
         loop {
           if b {
             brk
           }
 
-          b = true
+          b = True
 
           ctn
 
-          ret false
+          ret False
         }
 
-        ret true
+        ret True
       }
     }()
   |}
@@ -855,7 +857,7 @@ let%test _ =
       {|
     {
       proc() {
-        if { if true { ret 9 } else true } {
+        if { if True { ret 9 } else True } {
           ret 3
         }
 

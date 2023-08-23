@@ -9,7 +9,6 @@ type keyword = Brk | Ctn | Else | If | Loop | Mut | Proc | Ret | Val
 type token =
   | Ident of string
   | Keywd of keyword
-  | Bool of bool
   | Num of int
   | String of string
   | Rune of char
@@ -138,16 +137,14 @@ let%test_unit _ =
     (state_from "" |> lex_num_rest)
     ~expect:("", { text = ""; pos = { row = 1; col = 1 } })
 
-let ident_keywd_or_bool_of = function
+let ident_keywd_of = function
   | "brk" -> Keywd Brk
   | "ctn" -> Keywd Ctn
   | "else" -> Keywd Else
-  | "false" -> Bool false
   | "if" -> Keywd If
   | "loop" -> Keywd Loop
   | "mut" -> Keywd Mut
   | "proc" -> Keywd Proc
-  | "true" -> Bool true
   | "ret" -> Keywd Ret
   | "val" -> Keywd Val
   | non_keywd -> Ident non_keywd
@@ -365,7 +362,7 @@ let rec lex' s =
         | ident_start when is_ident_start ident_start ->
             let ident_rest, after_ident = lex_ident_rest advanced in
             let ident = prepend_char ident_start ident_rest in
-            ([ (ident_keywd_or_bool_of ident, s.pos) ], after_ident)
+            ([ (ident_keywd_of ident, s.pos) ], after_ident)
         | num_start when is_digit num_start ->
             let num_rest, after_num = lex_num_rest advanced in
             let num = prepend_char num_start num_rest |> int_of_string in
@@ -443,18 +440,17 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "brk ctn else false if loop mut proc ret true val"
+  lex "brk ctn else if loop mut proc ret val"
   |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
         [((Lex.Keywd Lex.Brk), 1:1); ((Lex.Keywd Lex.Ctn), 1:5);
-          ((Lex.Keywd Lex.Else), 1:9); ((Lex.Bool false), 1:14);
-          ((Lex.Keywd Lex.If), 1:20); ((Lex.Keywd Lex.Loop), 1:23);
-          ((Lex.Keywd Lex.Mut), 1:28); ((Lex.Keywd Lex.Proc), 1:32);
-          ((Lex.Keywd Lex.Ret), 1:37); ((Lex.Bool true), 1:41);
-          ((Lex.Keywd Lex.Val), 1:46)];
-        end_pos = 1:49 }
+          ((Lex.Keywd Lex.Else), 1:9); ((Lex.Keywd Lex.If), 1:14);
+          ((Lex.Keywd Lex.Loop), 1:17); ((Lex.Keywd Lex.Mut), 1:22);
+          ((Lex.Keywd Lex.Proc), 1:26); ((Lex.Keywd Lex.Ret), 1:31);
+          ((Lex.Keywd Lex.Val), 1:35)];
+        end_pos = 1:38 }
     |}]
 
 let%expect_test _ =

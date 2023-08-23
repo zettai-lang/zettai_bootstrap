@@ -44,7 +44,6 @@ and expr =
   | Proc of proc
   | Field of field
   | Call of call
-  | Bool of bool
   | Num of int
   | Rune of char
   | String of string
