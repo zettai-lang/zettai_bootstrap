@@ -8,12 +8,23 @@ type value =
   | SumVariant of sum_variant
   | Prod of prod
   | Proc of (prod -> Lex.pos -> value)
+  | Type of type'
 [@@deriving show]
 
 and scope_entry = Mut of value option ref | Val of value
 and prod_field = { name : string; entry : scope_entry }
 and prod = prod_field list
 and sum_variant = { id : int; disc : int; field : value option }
+
+(* TODO: add the rest of the variants and typecheck everything *)
+and type' = Num' | Rune' | Sum of sum_type
+and sum_type = { id' : int; variants : sum_variant_type list }
+
+and sum_variant_type = {
+  name' : string;
+  disc' : int;
+  field_type : type' option;
+}
 
 let scope_entry_from_kind kind value =
   match kind with Parse.Mut -> Mut (ref (Some value)) | Val -> Val value
@@ -34,6 +45,12 @@ let value_from_scope_entry name pos = function
       | Some value -> value
       | None -> raise (UseBeforeInitialization (name, pos)))
   | Val value -> value
+
+(* TODO: replace this with a general typecheck error *)
+exception ValueAsType of value * Lex.pos
+
+let expect_type value pos =
+  match value with Type t -> t | _ -> raise (ValueAsType (value, pos))
 
 let unit_val = Prod []
 
@@ -135,14 +152,27 @@ let bool_from_bool b =
 
 let is_bool { id; _ } = id == bool_id
 let bool_not { disc; _ } = bool_from_bool (disc = 0)
-let bool_eq { disc = d1; _ } { disc = d2; _ } = bool_from_bool (d1 = d2)
-let bool_ne { disc = d1; _ } { disc = d2; _ } = bool_from_bool (d1 != d2)
+
+exception Unreachable
 
 let rec exec_expr { Parse.inner = expr; pos } scopes =
   let exec_binop = exec_binop pos scopes in
   let exec_uop = exec_uop scopes in
   let exec_num_binop = exec_num_binop pos scopes in
   let exec_bool_binop = exec_bool_binop pos scopes in
+  let rec eq lhs rhs =
+    match (lhs, rhs) with
+    | SumVariant v1, SumVariant v2 -> (
+        v1.id = v2.id && v1.disc = v2.disc
+        &&
+        match (v1.field, v2.field) with
+        | Some f1, Some f2 -> eq f1 f2
+        | None, None -> true
+        | _ -> raise Unreachable)
+    | Num n1, Num n2 -> n1 = n2
+    | Rune r1, Rune r2 -> r1 = r2
+    | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos))
+  in
   match expr with
   | Parse.Plus binop -> exec_num_binop binop ( + )
   | Mins binop -> exec_num_binop binop ( - )
@@ -159,22 +189,9 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
       exec_uop operand (function
         | Num n -> None (Num (-n))
         | invalid -> raise (InvalidUnaryOperand (invalid, pos)))
-  | Eq binop ->
-      exec_binop binop (fun lhs rhs ->
-          match (lhs, rhs) with
-          | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
-              bool_eq v1 v2
-          | Num n1, Num n2 -> bool_from_bool (n1 = n2)
-          | Rune r1, Rune r2 -> bool_from_bool (r1 = r2)
-          | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
+  | Eq binop -> exec_binop binop (fun lhs rhs -> bool_from_bool (eq lhs rhs))
   | Ne binop ->
-      exec_binop binop (fun lhs rhs ->
-          match (lhs, rhs) with
-          | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
-              bool_ne v1 v2
-          | Num n1, Num n2 -> bool_from_bool (n1 != n2)
-          | Rune r1, Rune r2 -> bool_from_bool (r1 != r2)
-          | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
+      exec_binop binop (fun lhs rhs -> bool_from_bool (not (eq lhs rhs)))
   | Le binop ->
       exec_binop binop (fun lhs rhs ->
           match (lhs, rhs) with
@@ -187,7 +204,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
           | Num n1, Num n2 -> bool_from_bool (n1 < n2)
           | Rune r1, Rune r2 -> bool_from_bool (r1 < r2)
           | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
-  | Sum _variants -> raise TODO
+  | Sum variants -> exec_sum variants scopes
   | Prod fields ->
       let ctrl_of_fields = exec_prod fields scopes in
       map_ctrl_of (fun fields -> None (Prod fields)) ctrl_of_fields
@@ -255,6 +272,25 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
               | Some { entry; _ } ->
                   None (value_from_scope_entry accessor pos entry)
               | None -> raise (InvalidField (accessor, accessor_pos)))
+          | Type (Sum { id' = id; variants }) -> (
+              match
+                List.find_opt (fun { name'; _ } -> name' = accessor) variants
+              with
+              | Some { disc' = disc; field_type = None; _ } ->
+                  None (SumVariant { id; disc; field = None })
+              | Some { disc' = disc; field_type = Some _; _ } ->
+                  None
+                    (Proc
+                       (fun fields pos ->
+                         match fields with
+                         | [ { name = "value"; entry } ] ->
+                             let value =
+                               value_from_scope_entry "value" pos entry
+                             in
+                             SumVariant { id; disc; field = Some value }
+                         | _ ->
+                             raise (InvalidCallArgs ([ "value" ], fields, pos))))
+              | None -> raise (InvalidField (accessor, accessor_pos)))
           | invalid -> raise (InvalidAccess (invalid, pos)))
         ctrl
   | Call { callee; args' = { inner = args; pos = args_pos } } ->
@@ -296,6 +332,29 @@ and exec_bool_binop pos scopes binop op =
 and exec_uop scopes operand op =
   let ctrl = exec_expr operand scopes in
   map_ctrl_of (fun operand -> op operand) ctrl
+
+and exec_sum variants scopes =
+  let ctrl_of_variants =
+    List.fold_left
+      (fun ctrl { Parse.inner = { Parse.name'; value''' }; _ } ->
+        map_ctrl_of
+          (fun variants ->
+            let disc' = Oo.id (object end) in
+            match value''' with
+            | Some value ->
+                let field_type_ctrl = exec_expr value scopes in
+                map_ctrl_of
+                  (fun field_type ->
+                    let field_type = Some (expect_type field_type value.pos) in
+                    None (variants @ [ { name'; disc'; field_type } ]))
+                  field_type_ctrl
+            | None -> None (variants @ [ { name'; disc'; field_type = None } ]))
+          ctrl)
+      (None []) variants
+  in
+  map_ctrl_of
+    (fun variants -> None (Type (Sum { id' = Oo.id (object end); variants })))
+    ctrl_of_variants
 
 and exec_prod fields scopes =
   let _, ctrl =
@@ -463,6 +522,8 @@ let builtins =
   let builtins = StringMap.empty in
   let builtins = StringMap.add "False" (Val (bool_from_bool false)) builtins in
   let builtins = StringMap.add "True" (Val (bool_from_bool true)) builtins in
+  let builtins = StringMap.add "Num" (Val (Type Num')) builtins in
+  let builtins = StringMap.add "Rune" (Val (Type Rune')) builtins in
   StringMap.add "intrinsics" (Val (Prod intrinsics)) builtins
 
 let exec_ast ast =
@@ -489,6 +550,13 @@ let parse = Parse.parse
 let%test _ =
   let ast = parse "5 + 9" in
   Num 14 = exec_ast ast
+
+let%test_unit _ =
+  let ast = parse "5 == True" in
+  let f () = exec_ast ast in
+  assert_raises
+    (InvalidBinopOperands (Num 5, bool_from_bool true, { row = 1; col = 1 }))
+    f
 
 let%test_unit _ =
   let ast = parse "False + True" in
@@ -761,6 +829,122 @@ let%test_unit _ =
   let ast = parse "1.i" in
   let f () = exec_ast ast in
   assert_raises (InvalidAccess (Num 1, { row = 1; col = 1 })) f
+
+let%test _ =
+  let ast = parse "[]" in
+  match exec_ast ast with
+  | Type (Sum { id' = _; variants = [] }) -> true
+  | _ -> false
+
+let%test _ =
+  let ast = parse "[Red, Green(Num), Blue(Rune)]" in
+  match exec_ast ast with
+  | Type
+      (Sum
+        {
+          id' = _;
+          variants =
+            [
+              { name' = "Red"; disc' = _; field_type = None };
+              { name' = "Green"; disc' = _; field_type = Some Num' };
+              { name' = "Blue"; disc' = _; field_type = Some Rune' };
+            ];
+        }) ->
+      true
+  | _ -> false
+
+let%test _ =
+  let ast = parse "[Red].Red" in
+  match exec_ast ast with
+  | SumVariant { id = _; disc = _; field = None } -> true
+  | _ -> false
+
+let%test _ =
+  let ast = parse "[Green(Num)].Green(value = 5)" in
+  match exec_ast ast with
+  | SumVariant { id = _; disc = _; field = Some (Num 5) } -> true
+  | _ -> false
+
+let%test_unit _ =
+  let ast = parse "[Green(Num)].Green(foo = 5)" in
+  let f () = exec_ast ast in
+  assert_raises
+    (InvalidCallArgs
+       ( [ "value" ],
+         [ { name = "foo"; entry = Val (Num 5) } ],
+         { row = 1; col = 19 } ))
+    f
+
+let%test_unit _ =
+  let ast = parse "[].Blue" in
+  let f () = exec_ast ast in
+  assert_raises (InvalidField ("Blue", { row = 1; col = 4 })) f
+
+let%test _ =
+  (*
+  The two sums are separate, so the variants aren't equal though they happen to
+  have the same names
+  *)
+  let ast = parse "[Red].Red == [Red].Red" in
+  bool_from_bool false = exec_ast ast
+
+let%test _ =
+  let ast =
+    parse
+      {|
+    proc() {
+      val sum = [Red, Green, Blue]
+      ret sum.Green == sum.Green
+    }()
+  |}
+  in
+  bool_from_bool true = exec_ast ast
+
+let%test _ =
+  let ast =
+    parse
+      {|
+    proc() {
+      val sum = [Red, Green(Num), Blue]
+      ret sum.Green(value = 5) == sum.Green(value = 5)
+    }()
+  |}
+  in
+  bool_from_bool true = exec_ast ast
+
+let%test _ =
+  let ast =
+    parse
+      {|
+    proc() {
+      val sum = [Red, Green(Num), Blue]
+      ret sum.Green(value = 5) == sum.Green(value = 9)
+    }()
+  |}
+  in
+  bool_from_bool false = exec_ast ast
+
+let%test _ =
+  let ast =
+    parse
+      {|
+    proc() {
+      val sum = [Red, Green(Num), Blue(Num)]
+      ret sum.Green(value = 5) == sum.Blue(value = 5)
+    }()
+  |}
+  in
+  bool_from_bool false = exec_ast ast
+
+let%test_unit _ =
+  let ast = parse "[].Blue" in
+  let f () = exec_ast ast in
+  assert_raises (InvalidField ("Blue", { row = 1; col = 4 })) f
+
+let%test_unit _ =
+  let ast = parse "[Blue(5)]" in
+  let f () = exec_ast ast in
+  assert_raises (ValueAsType (Num 5, { row = 1; col = 7 })) f
 
 let%test _ =
   let ast = parse "{ proc() { } }()" in
