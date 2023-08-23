@@ -1,4 +1,4 @@
-type keyword = Brk | Ctn | Else | If | Loop | Proc | Ret | Val | Var
+type keyword = Brk | Ctn | Else | If | Loop | Mut | Proc | Ret | Val
 [@@deriving show]
 
 type token =

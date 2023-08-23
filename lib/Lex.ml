@@ -3,7 +3,7 @@ open Sexplib.Std
 
 let assert_raises = OUnit2.assert_raises
 
-type keyword = Brk | Ctn | Else | If | Loop | Proc | Ret | Val | Var
+type keyword = Brk | Ctn | Else | If | Loop | Mut | Proc | Ret | Val
 [@@deriving show]
 
 type token =
@@ -145,11 +145,11 @@ let ident_keywd_or_bool_of = function
   | "false" -> Bool false
   | "if" -> Keywd If
   | "loop" -> Keywd Loop
+  | "mut" -> Keywd Mut
   | "proc" -> Keywd Proc
   | "true" -> Bool true
   | "ret" -> Keywd Ret
   | "val" -> Keywd Val
-  | "var" -> Keywd Var
   | non_keywd -> Ident non_keywd
 
 exception InvalidEscapeSequence of char * pos
@@ -443,7 +443,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "brk ctn else false if loop proc ret true val var"
+  lex "brk ctn else false if loop mut proc ret true val"
   |> show_lex_result |> print_endline;
   [%expect
     {|
@@ -451,9 +451,9 @@ let%expect_test _ =
         [((Lex.Keywd Lex.Brk), 1:1); ((Lex.Keywd Lex.Ctn), 1:5);
           ((Lex.Keywd Lex.Else), 1:9); ((Lex.Bool false), 1:14);
           ((Lex.Keywd Lex.If), 1:20); ((Lex.Keywd Lex.Loop), 1:23);
-          ((Lex.Keywd Lex.Proc), 1:28); ((Lex.Keywd Lex.Ret), 1:33);
-          ((Lex.Bool true), 1:37); ((Lex.Keywd Lex.Val), 1:42);
-          ((Lex.Keywd Lex.Var), 1:46)];
+          ((Lex.Keywd Lex.Mut), 1:28); ((Lex.Keywd Lex.Proc), 1:32);
+          ((Lex.Keywd Lex.Ret), 1:37); ((Lex.Bool true), 1:41);
+          ((Lex.Keywd Lex.Val), 1:46)];
         end_pos = 1:49 }
     |}]
 

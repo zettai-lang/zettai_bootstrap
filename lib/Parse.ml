@@ -1,7 +1,7 @@
 let assert_raises = OUnit2.assert_raises
 
 type 'a with_pos = { inner : 'a; pos : Lex.pos } [@@deriving show]
-type kind = Val | Var [@@deriving show]
+type kind = Mut | Val [@@deriving show]
 
 type stmt =
   | Brk
@@ -97,8 +97,8 @@ let expect_advanced tl =
 let rec drop_nls = function (Lex.Nl, _) :: xs -> drop_nls xs | o -> o
 
 let kind_from_keywd = function
-  | Lex.Val -> Some Val
-  | Var -> Some Var
+  | Lex.Mut -> Some Mut
+  | Val -> Some Val
   | _ -> None
 
 exception UnexpectedToken of Lex.token * pos
@@ -1147,13 +1147,13 @@ let%test_unit _ =
   assert_raises (UnexpectedToken (Dot, { row = 1; col = 11 })) f
 
 let%test_unit _ =
-  let f () = parse "{ var foo: Bar" in
+  let f () = parse "{ mut foo: Bar" in
   assert_raises (UnexpectedEOF { row = 1; col = 15 }) f
 
 let%expect_test _ =
   parse {|
     {
-      var foo: Nat
+      mut foo: Nat
     }
   |} |> show_ast |> print_endline;
   [%expect
@@ -1162,7 +1162,7 @@ let%expect_test _ =
       (Parse.Block
          [{ Parse.inner =
             (Parse.Decl
-               { Parse.kind = { Parse.inner = Parse.Var; pos = 3:7 };
+               { Parse.kind = { Parse.inner = Parse.Mut; pos = 3:7 };
                  name = { Parse.inner = "foo"; pos = 3:11 };
                  type_ = (Some { Parse.inner = (Parse.Ident "Nat"); pos = 3:16 });
                  value = None });
@@ -1172,7 +1172,7 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ var foo: Bar)" in
+  let f () = parse "{ mut foo: Bar)" in
   assert_raises (UnexpectedToken (CloseParen, { row = 1; col = 15 })) f
 
 let%expect_test _ =
@@ -1209,14 +1209,14 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ var bar = 7 }" |> show_ast |> print_endline;
+  parse "{ mut bar = 7 }" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
       (Parse.Block
          [{ Parse.inner =
             (Parse.Decl
-               { Parse.kind = { Parse.inner = Parse.Var; pos = 1:3 };
+               { Parse.kind = { Parse.inner = Parse.Mut; pos = 1:3 };
                  name = { Parse.inner = "bar"; pos = 1:7 }; type_ = None;
                  value = (Some { Parse.inner = (Parse.Num 7); pos = 1:13 }) });
             pos = 1:3 }
@@ -1526,7 +1526,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(val foo: Nat = 7, val bar: Bool = false, var baz: Str = \"baz\",)"
+  parse "(val foo: Nat = 7, val bar: Bool = false, mut baz: Str = \"baz\",)"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -1553,7 +1553,7 @@ let%expect_test _ =
              pos = 1:20 };
            { Parse.inner =
              (Parse.Decl'
-                { Parse.kind' = (Some Parse.Var);
+                { Parse.kind' = (Some Parse.Mut);
                   name_or_count =
                   { Parse.inner = (Parse.Ident'' "baz"); pos = 1:47 };
                   type_'' =

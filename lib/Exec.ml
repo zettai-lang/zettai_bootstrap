@@ -10,12 +10,12 @@ type value =
   | Proc of (prod -> Lex.pos -> value)
 [@@deriving show]
 
-and scope_entry = Val of value | Var of value option ref
+and scope_entry = Mut of value option ref | Val of value
 and prod_field = { name : string; entry : scope_entry }
 and prod = prod_field list
 
 let scope_entry_from_kind kind value =
-  match kind with Parse.Val -> Val value | Var -> Var (ref (Some value))
+  match kind with Parse.Mut -> Mut (ref (Some value)) | Val -> Val value
 
 exception UseBeforeInitialization of string * Lex.pos
 
@@ -28,11 +28,11 @@ let () =
     | _ -> None)
 
 let value_from_scope_entry name pos = function
-  | Val value -> value
-  | Var value_ref -> (
+  | Mut value_ref -> (
       match !value_ref with
       | Some value -> value
       | None -> raise (UseBeforeInitialization (name, pos)))
+  | Val value -> value
 
 let unit_val = Prod []
 
@@ -66,12 +66,12 @@ let () =
              col)
     | _ -> None)
 
-exception VarArgument of Lex.pos
+exception MutArgument of Lex.pos
 
 let () =
   Printexc.register_printer (function
-    | VarArgument { row; col } ->
-        Some (Printf.sprintf "%d:%d: argument specified as var" row col)
+    | MutArgument { row; col } ->
+        Some (Printf.sprintf "%d:%d: argument specified as mut" row col)
     | _ -> None)
 
 let rec args_names = function
@@ -89,7 +89,7 @@ let rec args_names = function
     }
     :: fields ->
       let () =
-        match kind' with Some Parse.Var -> raise (VarArgument pos) | _ -> ()
+        match kind' with Some Parse.Mut -> raise (MutArgument pos) | _ -> ()
       in
       name :: args_names fields
   | {
@@ -215,8 +215,8 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
                               fields)
                              .entry
                          with
-                         | Val _ -> true
-                         | Var _ -> false)
+                         | Mut _ -> false
+                         | Val _ -> true)
                        expected fields)
              then raise (InvalidCallArgs (expected, fields, call_pos))
              else
@@ -372,20 +372,20 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
               scope := StringMap.add name entry !scope;
               None ())
             ctrl
-      | Val, None -> raise (UninitializedVal (name, pos))
-      | Var, None ->
+      | Mut, None ->
           let scope = List.hd scopes in
           let () =
             match StringMap.find_opt name !scope with
             | Some _ -> raise (Redeclaration (name, pos))
             | None -> ()
           in
-          scope := StringMap.add name (Var (ref Option.None)) !scope;
-          None ())
+          scope := StringMap.add name (Mut (ref Option.None)) !scope;
+          None ()
+      | Val, None -> raise (UninitializedVal (name, pos)))
   | Assign { assignee; value' } -> (
       let try_scope_entry_assign assignee' scopes =
         match assignee' with
-        | Var value_ref ->
+        | Mut value_ref ->
             let ctrl = exec_expr value' scopes in
             map_ctrl_of
               (fun value ->
@@ -700,12 +700,12 @@ let%test_unit _ =
   assert_raises (Redeclaration ("i", { row = 1; col = 13 })) f
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', var k = true)" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true)" in
   Prod
     [
       { name = "i"; entry = Val (Num 9) };
       { name = "j"; entry = Val (Rune 'a') };
-      { name = "k"; entry = Var (ref (Some (Bool true))) };
+      { name = "k"; entry = Mut (ref (Some (Bool true))) };
     ]
   = exec_ast ast
 
@@ -714,15 +714,15 @@ let%test _ =
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', var k = true).j" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true).j" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', var k = true).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
   Bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', var k = true).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
   Bool true = exec_ast ast
 
 let%test_unit _ =
@@ -767,9 +767,9 @@ let%test_unit _ =
   assert_raises (InvalidCallArgs ([ "i" ], [], { row = 1; col = 27 })) f
 
 let%test_unit _ =
-  let ast = parse "proc(var i: Nat) { i }" in
+  let ast = parse "proc(mut i: Nat) { i }" in
   let f () = exec_ast ast in
-  assert_raises (VarArgument { row = 1; col = 6 }) f
+  assert_raises (MutArgument { row = 1; col = 6 }) f
 
 let%test_unit _ =
   let ast = parse "proc(val 5: Nat) { }" in
@@ -792,7 +792,7 @@ let%test _ =
       {|
     {
       proc() {
-        var i = 0
+        mut i = 0
         loop {
           i = 2
           brk
@@ -810,7 +810,7 @@ let%test_unit _ =
       {|
     {
       proc() {
-        var i
+        mut i
         ret i
       }
     }()
@@ -825,7 +825,7 @@ let%test _ =
       {|
     {
       proc() {
-        var b = false
+        mut b = false
         loop {
           if b {
             brk
@@ -898,7 +898,7 @@ let%test_unit _ =
   assert_raises (InvalidCallee (Num 1, { row = 1; col = 1 })) f
 
 let%test _ =
-  let ast = parse "{ proc() { var i } }()" in
+  let ast = parse "{ proc() { mut i } }()" in
   unit_val = exec_ast ast
 
 let%test _ =
@@ -926,8 +926,8 @@ let%test_unit _ =
       {|
     {
       proc() {
-        var i
-        var i
+        mut i
+        mut i
       }
     }()
   |}
@@ -987,7 +987,7 @@ let%test _ =
       {|
     {
       proc() {
-        var p = (var f = 5)
+        mut p = (mut f = 5)
         p.f = 9
         ret p.f
       }
@@ -1002,7 +1002,7 @@ let%test_unit _ =
       {|
     {
       proc() {
-        var p = (var f = 5)
+        mut p = (mut f = 5)
         p.bogus = 9
         ret p.f
       }
