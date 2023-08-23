@@ -3,10 +3,9 @@ exception TODO
 module StringMap = Map.Make (String)
 
 type value =
-  (* TODO: replace this with a Sum value once that's implemented *)
-  | Bool of bool
   | Num of int
   | Rune of char
+  | SumVariant of sum_variant
   | Prod of prod
   | Proc of (prod -> Lex.pos -> value)
 [@@deriving show]
@@ -14,6 +13,7 @@ type value =
 and scope_entry = Mut of value option ref | Val of value
 and prod_field = { name : string; entry : scope_entry }
 and prod = prod_field list
+and sum_variant = { id : int; disc : int; field : value option }
 
 let scope_entry_from_kind kind value =
   match kind with Parse.Mut -> Mut (ref (Some value)) | Val -> Val value
@@ -128,6 +128,16 @@ exception InvalidCallArgs of string list * prod * Lex.pos
 exception InvalidCallee of value * Lex.pos
 exception UnexpectedCtrl of Lex.pos
 
+let bool_id = Oo.id (object end)
+
+let bool_from_bool b =
+  SumVariant { id = bool_id; disc = (if b then 1 else 0); field = None }
+
+let is_bool { id; _ } = id == bool_id
+let bool_not { disc; _ } = bool_from_bool (disc = 0)
+let bool_eq { disc = d1; _ } { disc = d2; _ } = bool_from_bool (d1 = d2)
+let bool_ne { disc = d1; _ } { disc = d2; _ } = bool_from_bool (d1 != d2)
+
 let rec exec_expr { Parse.inner = expr; pos } scopes =
   let exec_binop = exec_binop pos scopes in
   let exec_uop = exec_uop scopes in
@@ -143,7 +153,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
   | Or binop -> exec_bool_binop binop ( || )
   | Not operand ->
       exec_uop operand (function
-        | Bool b -> None (Bool (not b))
+        | SumVariant variant when is_bool variant -> None (bool_not variant)
         | invalid -> raise (InvalidUnaryOperand (invalid, pos)))
   | UnaryMins operand ->
       exec_uop operand (function
@@ -152,28 +162,30 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
   | Eq binop ->
       exec_binop binop (fun lhs rhs ->
           match (lhs, rhs) with
-          | Bool b1, Bool b2 -> Bool (b1 = b2)
-          | Num n1, Num n2 -> Bool (n1 = n2)
-          | Rune r1, Rune r2 -> Bool (r1 = r2)
+          | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
+              bool_eq v1 v2
+          | Num n1, Num n2 -> bool_from_bool (n1 = n2)
+          | Rune r1, Rune r2 -> bool_from_bool (r1 = r2)
           | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
   | Ne binop ->
       exec_binop binop (fun lhs rhs ->
           match (lhs, rhs) with
-          | Bool b1, Bool b2 -> Bool (b1 != b2)
-          | Num n1, Num n2 -> Bool (n1 != n2)
-          | Rune r1, Rune r2 -> Bool (r1 != r2)
+          | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
+              bool_ne v1 v2
+          | Num n1, Num n2 -> bool_from_bool (n1 != n2)
+          | Rune r1, Rune r2 -> bool_from_bool (r1 != r2)
           | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
   | Le binop ->
       exec_binop binop (fun lhs rhs ->
           match (lhs, rhs) with
-          | Num n1, Num n2 -> Bool (n1 <= n2)
-          | Rune r1, Rune r2 -> Bool (r1 <= r2)
+          | Num n1, Num n2 -> bool_from_bool (n1 <= n2)
+          | Rune r1, Rune r2 -> bool_from_bool (r1 <= r2)
           | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
   | Lt binop ->
       exec_binop binop (fun lhs rhs ->
           match (lhs, rhs) with
-          | Num n1, Num n2 -> Bool (n1 < n2)
-          | Rune r1, Rune r2 -> Bool (r1 < r2)
+          | Num n1, Num n2 -> bool_from_bool (n1 < n2)
+          | Rune r1, Rune r2 -> bool_from_bool (r1 < r2)
           | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
   | Sum _variants -> raise TODO
   | Prod fields ->
@@ -188,8 +200,9 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
       let ctrl = exec_expr cond scopes in
       map_ctrl_of
         (function
-          | Bool true -> exec_expr if_branch scopes
-          | Bool false -> (
+          | SumVariant variant when is_bool variant && variant.disc = 1 ->
+              exec_expr if_branch scopes
+          | SumVariant variant when is_bool variant && variant.disc = 0 -> (
               match else_branch with
               | Some else_branch -> exec_expr else_branch scopes
               | None -> None unit_val)
@@ -274,7 +287,10 @@ and exec_num_binop pos scopes binop op =
 and exec_bool_binop pos scopes binop op =
   exec_binop pos scopes binop (fun lhs rhs ->
       match (lhs, rhs) with
-      | Bool b1, Bool b2 -> Bool (op b1 b2)
+      | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
+          let d1 = v1.disc != 0 in
+          let d2 = v2.disc != 0 in
+          bool_from_bool (op d1 d2)
       | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
 
 and exec_uop scopes operand op =
@@ -445,8 +461,8 @@ let intrinsics =
 
 let builtins =
   let builtins = StringMap.empty in
-  let builtins = StringMap.add "False" (Val (Bool false)) builtins in
-  let builtins = StringMap.add "True" (Val (Bool true)) builtins in
+  let builtins = StringMap.add "False" (Val (bool_from_bool false)) builtins in
+  let builtins = StringMap.add "True" (Val (bool_from_bool true)) builtins in
   StringMap.add "intrinsics" (Val (Prod intrinsics)) builtins
 
 let exec_ast ast =
@@ -478,7 +494,8 @@ let%test_unit _ =
   let ast = parse "False + True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
+    (InvalidBinopOperands
+       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
@@ -489,7 +506,8 @@ let%test_unit _ =
   let ast = parse "False - True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
+    (InvalidBinopOperands
+       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
@@ -500,7 +518,8 @@ let%test_unit _ =
   let ast = parse "False * True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
+    (InvalidBinopOperands
+       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
@@ -511,7 +530,8 @@ let%test_unit _ =
   let ast = parse "False / True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
+    (InvalidBinopOperands
+       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
@@ -522,16 +542,17 @@ let%test_unit _ =
   let ast = parse "False % True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
+    (InvalidBinopOperands
+       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
   let ast = parse "True && False" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "True && True" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "5 && 9" in
@@ -540,15 +561,15 @@ let%test_unit _ =
 
 let%test _ =
   let ast = parse "False || True" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "True || False" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "False || False" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "5 || 9" in
@@ -557,11 +578,11 @@ let%test_unit _ =
 
 let%test _ =
   let ast = parse "!False" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "!True" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "!5" in
@@ -575,100 +596,104 @@ let%test _ =
 let%test_unit _ =
   let ast = parse "-False" in
   let f () = exec_ast ast in
-  assert_raises (InvalidUnaryOperand (Bool false, { row = 1; col = 1 })) f
+  assert_raises
+    (InvalidUnaryOperand (bool_from_bool false, { row = 1; col = 1 }))
+    f
 
 let%test _ =
   let ast = parse "False == True" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "True == True" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "5 == 9" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "5 == 5" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "'r' == 'q'" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "'r' == 'r'" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "False != True" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "True != True" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "5 != 9" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "5 != 5" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "'r' != 'q'" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "'r' != 'r'" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "5 <= 5" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "9 <= 5" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "'r' <= 'q'" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "'q' <= 'q'" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "False <= True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
+    (InvalidBinopOperands
+       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
   let ast = parse "5 < 5" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "5 < 9" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "'r' < 'r'" in
-  Bool false = exec_ast ast
+  bool_from_bool false = exec_ast ast
 
 let%test _ =
   let ast = parse "'q' <= 'r'" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "False < True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands (Bool false, Bool true, { row = 1; col = 1 }))
+    (InvalidBinopOperands
+       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
     f
 
 let%test _ =
@@ -707,7 +732,7 @@ let%test _ =
     [
       { name = "i"; entry = Val (Num 9) };
       { name = "j"; entry = Val (Rune 'a') };
-      { name = "k"; entry = Mut (ref (Some (Bool true))) };
+      { name = "k"; entry = Mut (ref (Some (bool_from_bool true))) };
     ]
   = exec_ast ast
 
@@ -721,11 +746,11 @@ let%test _ =
 
 let%test _ =
   let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "().i" in
@@ -845,7 +870,7 @@ let%test _ =
     }()
   |}
   in
-  Bool true = exec_ast ast
+  bool_from_bool true = exec_ast ast
 
 let%test _ =
   let ast = parse "{ proc() { loop { ret 'a' } } }()" in
