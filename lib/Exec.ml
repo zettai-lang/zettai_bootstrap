@@ -9,16 +9,15 @@ type value =
   | Prod of prod
   | Proc of (prod -> Lex.pos -> value)
   | Type of type'
-[@@deriving show]
 
 and scope_entry = Mut of value option ref | Val of value
 and prod_field = { name : string; entry : scope_entry }
 and prod = prod_field list
-and sum_variant = { id : int; disc : int; field : value option }
+and sum_variant = { type' : sum_type; disc : int; field : value option }
 
 (* TODO: add the rest of the variants and typecheck everything *)
 and type' = Num' | Rune' | Sum of sum_type
-and sum_type = { id' : int; variants : sum_variant_type list }
+and sum_type = sum_variant_type list
 
 and sum_variant_type = {
   name' : string;
@@ -148,12 +147,16 @@ exception InvalidCallArgs of string list * prod * Lex.pos
 exception InvalidCallee of value * Lex.pos
 exception UnexpectedCtrl of Lex.pos
 
-let bool_id = Oo.id (object end)
+let bool_type : sum_type =
+  [
+    { name' = "False"; disc' = 0; field_type = None };
+    { name' = "True"; disc' = 1; field_type = None };
+  ]
 
 let bool_from_bool b =
-  SumVariant { id = bool_id; disc = (if b then 1 else 0); field = None }
+  SumVariant { type' = bool_type; disc = (if b then 1 else 0); field = None }
 
-let is_bool { id; _ } = id == bool_id
+let is_bool { type'; _ } = type' == bool_type
 let bool_not { disc; _ } = bool_from_bool (disc = 0)
 
 exception Unreachable
@@ -166,7 +169,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
   let rec eq lhs rhs =
     match (lhs, rhs) with
     | SumVariant v1, SumVariant v2 -> (
-        v1.id = v2.id && v1.disc = v2.disc
+        v1.type' == v2.type' && v1.disc = v2.disc
         &&
         match (v1.field, v2.field) with
         | Some f1, Some f2 -> eq f1 f2
@@ -275,12 +278,12 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
               | Some { entry; _ } ->
                   None (value_from_scope_entry accessor pos entry)
               | None -> raise (InvalidField (accessor, accessor_pos)))
-          | Type (Sum { id' = id; variants }) -> (
+          | Type (Sum type') -> (
               match
-                List.find_opt (fun { name'; _ } -> name' = accessor) variants
+                List.find_opt (fun { name'; _ } -> name' = accessor) type'
               with
               | Some { disc' = disc; field_type = None; _ } ->
-                  None (SumVariant { id; disc; field = None })
+                  None (SumVariant { type'; disc; field = None })
               | Some { disc' = disc; field_type = Some _; _ } ->
                   None
                     (Proc
@@ -290,7 +293,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
                              let value =
                                value_from_scope_entry "value" pos entry
                              in
-                             SumVariant { id; disc; field = Some value }
+                             SumVariant { type'; disc; field = Some value }
                          | _ ->
                              raise (InvalidCallArgs ([ "value" ], fields, pos))))
               | None -> raise (InvalidField (accessor, accessor_pos)))
@@ -355,9 +358,7 @@ and exec_sum variants scopes =
           ctrl)
       (None []) variants
   in
-  map_ctrl_of
-    (fun variants -> None (Type (Sum { id' = Oo.id (object end); variants })))
-    ctrl_of_variants
+  map_ctrl_of (fun variants -> None (Type (Sum variants))) ctrl_of_variants
 
 and exec_prod fields scopes =
   let _, ctrl =
@@ -861,37 +862,31 @@ let%test_unit _ =
 
 let%test _ =
   let ast = parse "[]" "test.zt" in
-  match exec_ast ast with
-  | Type (Sum { id' = _; variants = [] }) -> true
-  | _ -> false
+  match exec_ast ast with Type (Sum []) -> true | _ -> false
 
 let%test _ =
   let ast = parse "[Red, Green(Num), Blue(Rune)]" "test.zt" in
   match exec_ast ast with
   | Type
       (Sum
-        {
-          id' = _;
-          variants =
-            [
-              { name' = "Red"; disc' = _; field_type = None };
-              { name' = "Green"; disc' = _; field_type = Some Num' };
-              { name' = "Blue"; disc' = _; field_type = Some Rune' };
-            ];
-        }) ->
+        [
+          { name' = "Red"; disc' = _; field_type = None };
+          { name' = "Green"; disc' = _; field_type = Some Num' };
+          { name' = "Blue"; disc' = _; field_type = Some Rune' };
+        ]) ->
       true
   | _ -> false
 
 let%test _ =
   let ast = parse "[Red].Red" "test.zt" in
   match exec_ast ast with
-  | SumVariant { id = _; disc = _; field = None } -> true
+  | SumVariant { type' = _; disc = _; field = None } -> true
   | _ -> false
 
 let%test _ =
   let ast = parse "[Green(Num)].Green(value = 5)" "test.zt" in
   match exec_ast ast with
-  | SumVariant { id = _; disc = _; field = Some (Num 5) } -> true
+  | SumVariant { type' = _; disc = _; field = Some (Num 5) } -> true
   | _ -> false
 
 let%test_unit _ =
