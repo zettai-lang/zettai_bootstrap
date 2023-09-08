@@ -145,6 +145,7 @@ let bool_from_bool b =
 let is_bool { type'; _ } = type' == bool_type
 let bool_not { disc; _ } = bool_from_bool (disc = 0)
 
+exception ProcTypeWithoutReturn of Lex.pos
 exception Unreachable
 
 let rec exec_expr { Parse.inner = expr; pos } scopes =
@@ -228,7 +229,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
               None (Type (Proc' { arg_types; return_type })))
             return_type_ctrl)
         ctrl_of_arg_types
-  | ProcType { return_type = None; _ } -> raise TODO
+  | ProcType { return_type = None; _ } -> raise (ProcTypeWithoutReturn pos)
   | Proc { type_' = { args = { inner = args; _ }; _ }; body } ->
       let expected = args_names args in
       None
@@ -1458,3 +1459,8 @@ let%test_unit _ =
   let ast = parse "proc(i: Num, i: Num): Num" "test.zt" in
   let f () = exec_ast ast in
   assert_raises (Redeclaration ("i", { path = "test.zt"; row = 1; col = 14 })) f
+
+let%test_unit _ =
+  let ast = parse "proc(i: Num)" "test.zt" in
+  let f () = exec_ast ast in
+  assert_raises (ProcTypeWithoutReturn { path = "test.zt"; row = 1; col = 1 }) f
