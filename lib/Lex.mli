@@ -32,10 +32,10 @@ type token =
   | Nl
 [@@deriving show]
 
-type pos = { row : int; col : int }
+type pos = { path : string; row : int; col : int }
 
 val pp_pos : Format.formatter -> pos -> unit
 
 type lex_result = { tokens : (token * pos) list; end_pos : pos }
 
-val lex : string -> lex_result
+val lex : string -> string -> lex_result

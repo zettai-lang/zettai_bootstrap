@@ -104,9 +104,9 @@ exception UnexpectedToken of Lex.token * pos
 
 let () =
   Printexc.register_printer (function
-    | UnexpectedToken (token, { row; col }) ->
+    | UnexpectedToken (token, { path; row; col }) ->
         Some
-          (Printf.sprintf "%d:%d: unexpected token: %s" row col
+          (Printf.sprintf "%s:%d:%d: unexpected token: %s" path row col
              (Lex.show_token token))
     | _ -> None)
 
@@ -596,8 +596,8 @@ and fix_stmt_prec stmt =
       { inner = Expr inner; pos }
   | Brk | Ctn -> stmt
 
-let parse text =
-  let lr = Lex.lex text in
+let parse text path =
+  let lr = Lex.lex text path in
   try
     let ast, trailing = drop_nls lr.tokens |> parse_expr in
     match drop_nls trailing with
@@ -606,43 +606,47 @@ let parse text =
   with PreUnexpectedEOF -> raise (UnexpectedEOF lr.end_pos)
 
 let%expect_test _ =
-  parse "0" |> show_ast |> print_endline;
+  parse "0" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Num 0); pos = 1:1 } |}]
 
 let%expect_test _ =
-  parse "35185" |> show_ast |> print_endline;
+  parse "35185" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Num 35185); pos = 1:1 } |}]
 
 let%expect_test _ =
-  parse "0123456789" |> show_ast |> print_endline;
+  parse "0123456789" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Num 123456789); pos = 1:1 } |}]
 
 let%expect_test _ =
-  parse "\"foo bar baz\"" |> show_ast |> print_endline;
+  parse "\"foo bar baz\"" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.String "foo bar baz"); pos = 1:1 } |}]
 
 let%expect_test _ =
-  parse "'\\n'" |> show_ast |> print_endline;
+  parse "'\\n'" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Rune '\n'); pos = 1:1 } |}]
 
 let%test_unit _ =
-  let f () = parse "=" in
-  assert_raises (UnexpectedToken (Assign, { row = 1; col = 1 })) f
+  let f () = parse "=" "test.zt" in
+  assert_raises
+    (UnexpectedToken (Assign, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test_unit _ =
-  let f () = parse "<=" in
-  assert_raises (UnexpectedToken (Le, { row = 1; col = 1 })) f
+  let f () = parse "<=" "test.zt" in
+  assert_raises (UnexpectedToken (Le, { path = "test.zt"; row = 1; col = 1 })) f
 
 let%test_unit _ =
-  let f () = parse ":" in
-  assert_raises (UnexpectedToken (Colon, { row = 1; col = 1 })) f
+  let f () = parse ":" "test.zt" in
+  assert_raises
+    (UnexpectedToken (Colon, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test_unit _ =
-  let f () = parse "\n\n  " in
-  assert_raises (UnexpectedEOF { row = 3; col = 3 }) f
+  let f () = parse "\n\n  " "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 3; col = 3 }) f
 
 let%expect_test _ =
-  parse "True || False" |> show_ast |> print_endline;
+  parse "True || False" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -653,7 +657,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "foo % bar" |> show_ast |> print_endline;
+  parse "foo % bar" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -664,7 +668,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "1 + 2 - 3 * 4 / 5 % 6 && 7 || 8 == 9 != 10 <= 11 < 12"
+  parse "1 + 2 - 3 * 4 / 5 % 6 && 7 || 8 == 9 != 10 <= 11 < 12" "test.zt"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -716,7 +720,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "\"foo\" + \"bar\"" |> show_ast |> print_endline;
+  parse "\"foo\" + \"bar\"" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -727,7 +731,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "'f' / 'b'" |> show_ast |> print_endline;
+  parse "'f' / 'b'" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -738,7 +742,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ 'f' }" |> show_ast |> print_endline;
+  parse "{ 'f' }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -747,7 +751,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "-77" |> show_ast |> print_endline;
+  parse "-77" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner = (Parse.UnaryMins { Parse.inner = (Parse.Num 77); pos = 1:2 });
@@ -755,7 +759,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "-77 - -77" |> show_ast |> print_endline;
+  parse "-77 - -77" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -771,7 +775,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "!False" |> show_ast |> print_endline;
+  parse "!False" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -779,11 +783,13 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "5 5" in
-  assert_raises (UnexpectedToken (Num 5, { row = 1; col = 3 })) f
+  let f () = parse "5 5" "test.zt" in
+  assert_raises
+    (UnexpectedToken (Num 5, { path = "test.zt"; row = 1; col = 3 }))
+    f
 
 let%expect_test _ =
-  parse "if True False" |> show_ast |> print_endline;
+  parse "if True False" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -795,7 +801,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "if True False else True" |> show_ast |> print_endline;
+  parse "if True False else True" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -808,7 +814,8 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "if True { i = 1 } else { i = 2 }" |> show_ast |> print_endline;
+  parse "if True { i = 1 } else { i = 2 }" "test.zt"
+  |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -840,7 +847,8 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "if True { i = 1 } else if False { i = 2 }" |> show_ast |> print_endline;
+  parse "if True { i = 1 } else if False { i = 2 }" "test.zt"
+  |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -880,7 +888,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "if True { i = 1 } else if False { i = 2 } else { i = 3 }"
+  parse "if True { i = 1 } else if False { i = 2 } else { i = 3 }" "test.zt"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -934,13 +942,13 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ }" |> show_ast |> print_endline;
+  parse "{ }" "test.zt" |> show_ast |> print_endline;
   [%expect {|
       { Parse.inner = (Parse.Block []); pos = 1:1 }
   |}]
 
 let%expect_test _ =
-  parse "{ True }    " |> show_ast |> print_endline;
+  parse "{ True }    " "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
       { Parse.inner =
@@ -950,11 +958,11 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ True   " in
-  assert_raises (UnexpectedEOF { row = 1; col = 10 }) f
+  let f () = parse "{ True   " "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 10 }) f
 
 let%expect_test _ =
-  parse "{ brk }" |> show_ast |> print_endline;
+  parse "{ brk }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner = (Parse.Block [{ Parse.inner = Parse.Brk; pos = 1:3 }]);
@@ -962,15 +970,17 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ brk" in
-  assert_raises (UnexpectedEOF { row = 1; col = 6 }) f
+  let f () = parse "{ brk" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let f () = parse "{ brk." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 6 })) f
+  let f () = parse "{ brk." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 6 }))
+    f
 
 let%expect_test _ =
-  parse "{ ctn }" |> show_ast |> print_endline;
+  parse "{ ctn }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner = (Parse.Block [{ Parse.inner = Parse.Ctn; pos = 1:3 }]);
@@ -978,15 +988,17 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ ctn" in
-  assert_raises (UnexpectedEOF { row = 1; col = 6 }) f
+  let f () = parse "{ ctn" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let f () = parse "{ ctn." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 6 })) f
+  let f () = parse "{ ctn." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 6 }))
+    f
 
 let%expect_test _ =
-  parse "{ ret }" |> show_ast |> print_endline;
+  parse "{ ret }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner = (Parse.Block [{ Parse.inner = (Parse.Ret None); pos = 1:3 }]);
@@ -994,7 +1006,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ ret 5 }" |> show_ast |> print_endline;
+  parse "{ ret 5 }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1007,19 +1019,21 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ ret" in
-  assert_raises (UnexpectedEOF { row = 1; col = 6 }) f
+  let f () = parse "{ ret" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let f () = parse "{ ret." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 6 })) f
+  let f () = parse "{ ret." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 6 }))
+    f
 
 let%expect_test _ =
   parse {|
     {
       ret
     }
-  |} |> show_ast |> print_endline;
+  |} "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner = (Parse.Block [{ Parse.inner = (Parse.Ret None); pos = 3:7 }]);
@@ -1027,7 +1041,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ brk\nctn\nret }" |> show_ast |> print_endline;
+  parse "{ brk\nctn\nret }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1039,7 +1053,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ loop 5 }" |> show_ast |> print_endline;
+  parse "{ loop 5 }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1057,7 +1071,7 @@ let%expect_test _ =
       i = i + 1
     }
   }
-  |}
+  |} "test.zt"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -1087,7 +1101,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ val foo }" |> show_ast |> print_endline;
+  parse "{ val foo }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1103,19 +1117,21 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ val" in
-  assert_raises (UnexpectedEOF { row = 1; col = 6 }) f
+  let f () = parse "{ val" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let f () = parse "{ val." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 6 })) f
+  let f () = parse "{ val." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 6 }))
+    f
 
 let%expect_test _ =
   parse {|
     {
       val foo
     }
-  |} |> show_ast |> print_endline;
+  |} "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1131,23 +1147,26 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ val foo" in
-  assert_raises (UnexpectedEOF { row = 1; col = 10 }) f
+  let f () = parse "{ val foo" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 10 }) f
 
 let%test_unit _ =
-  let f () = parse "{ val foo ." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 11 })) f
+  let f () = parse "{ val foo ." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 11 }))
+    f
 
 let%test_unit _ =
-  let f () = parse "{ mut foo: Bar" in
-  assert_raises (UnexpectedEOF { row = 1; col = 15 }) f
+  let f () = parse "{ mut foo: Bar" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 15 }) f
 
 let%expect_test _ =
   parse {|
     {
       mut foo: Nat
     }
-  |} |> show_ast |> print_endline;
+  |} "test.zt"
+  |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1164,11 +1183,13 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "{ mut foo: Bar)" in
-  assert_raises (UnexpectedToken (CloseParen, { row = 1; col = 15 })) f
+  let f () = parse "{ mut foo: Bar)" "test.zt" in
+  assert_raises
+    (UnexpectedToken (CloseParen, { path = "test.zt"; row = 1; col = 15 }))
+    f
 
 let%expect_test _ =
-  parse "{ foo + 9 }" |> show_ast |> print_endline;
+  parse "{ foo + 9 }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1184,7 +1205,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ val bar: 7 }" |> show_ast |> print_endline;
+  parse "{ val bar: 7 }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1201,7 +1222,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ mut bar = 7 }" |> show_ast |> print_endline;
+  parse "{ mut bar = 7 }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1224,7 +1245,7 @@ let%expect_test _ =
     val baz: Nat = 9
 
   }
-  |}
+  |} "test.zt"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -1250,47 +1271,55 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "[]" |> show_ast |> print_endline;
+  parse "[]" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Sum []); pos = 1:1 } |}]
 
 let%expect_test _ =
-  parse "[\n\n\n]" |> show_ast |> print_endline;
+  parse "[\n\n\n]" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Sum []); pos = 1:1 } |}]
 
 let%test_unit _ =
-  let f () = parse "[" in
-  assert_raises (UnexpectedEOF { row = 1; col = 2 }) f
+  let f () = parse "[" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 2 }) f
 
 let%test_unit _ =
-  let f () = parse "[." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 2 })) f
+  let f () = parse "[." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 2 }))
+    f
 
 let%test_unit _ =
-  let f () = parse "[Red" in
-  assert_raises (UnexpectedEOF { row = 1; col = 5 }) f
+  let f () = parse "[Red" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 5 }) f
 
 let%test_unit _ =
-  let f () = parse "[Green(Foo" in
-  assert_raises (UnexpectedEOF { row = 1; col = 11 }) f
+  let f () = parse "[Green(Foo" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 11 }) f
 
 let%test_unit _ =
-  let f () = parse "[Blue(Foo)" in
-  assert_raises (UnexpectedEOF { row = 1; col = 11 }) f
+  let f () = parse "[Blue(Foo)" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 11 }) f
 
 let%test_unit _ =
-  let f () = parse "[Blue(Foo)." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 11 })) f
+  let f () = parse "[Blue(Foo)." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 11 }))
+    f
 
 let%test_unit _ =
-  let f () = parse "[Blue(Foo]" in
-  assert_raises (UnexpectedToken (CloseSquareBrkt, { row = 1; col = 10 })) f
+  let f () = parse "[Blue(Foo]" "test.zt" in
+  assert_raises
+    (UnexpectedToken (CloseSquareBrkt, { path = "test.zt"; row = 1; col = 10 }))
+    f
 
 let%test_unit _ =
-  let f () = parse "[Red." in
-  assert_raises (UnexpectedToken (Dot, { row = 1; col = 5 })) f
+  let f () = parse "[Red." "test.zt" in
+  assert_raises
+    (UnexpectedToken (Dot, { path = "test.zt"; row = 1; col = 5 }))
+    f
 
 let%expect_test _ =
-  parse "[Red, Green, Blue]" |> show_ast |> print_endline;
+  parse "[Red, Green, Blue]" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1305,7 +1334,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "[Red,\n\nGreen, Blue,]" |> show_ast |> print_endline;
+  parse "[Red,\n\nGreen, Blue,]" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1325,7 +1354,7 @@ let%expect_test _ =
       Green,
       Blue,
     ]
-  |}
+  |} "test.zt"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -1344,7 +1373,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "[Blue(void)]" |> show_ast |> print_endline;
+  parse "[Blue(void)]" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1359,26 +1388,28 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "()" |> show_ast |> print_endline;
+  parse "()" "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Prod []); pos = 1:1 } |}]
 
 let%test_unit _ =
-  let f () = parse "(val" in
-  assert_raises (UnexpectedEOF { row = 1; col = 5 }) f
+  let f () = parse "(val" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 5 }) f
 
 let%test_unit _ =
-  let f () = parse "(val ]" in
-  assert_raises (UnexpectedToken (CloseSquareBrkt, { row = 1; col = 6 })) f
+  let f () = parse "(val ]" "test.zt" in
+  assert_raises
+    (UnexpectedToken (CloseSquareBrkt, { path = "test.zt"; row = 1; col = 6 }))
+    f
 
 let%expect_test _ =
   parse {|(
 
   )
-|} |> show_ast |> print_endline;
+|} "test.zt" |> show_ast |> print_endline;
   [%expect {| { Parse.inner = (Parse.Prod []); pos = 1:1 } |}]
 
 let%expect_test _ =
-  parse "(37)" |> show_ast |> print_endline;
+  parse "(37)" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1394,7 +1425,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(37,)" |> show_ast |> print_endline;
+  parse "(37,)" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1413,7 +1444,7 @@ let%expect_test _ =
   parse {|(
     37,
   )
-|} |> show_ast |> print_endline;
+|} "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1429,7 +1460,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(37: Bool,)" |> show_ast |> print_endline;
+  parse "(37: Bool,)" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1447,7 +1478,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(37 * 88)" |> show_ast |> print_endline;
+  parse "(37 * 88)" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1463,7 +1494,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(37 * 88, 'o', foo)" |> show_ast |> print_endline;
+  parse "(37 * 88, 'o', foo)" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1487,7 +1518,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "(val foo, val bar, val baz)" |> show_ast |> print_endline;
+  parse "(val foo, val bar, val baz)" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1519,6 +1550,7 @@ let%expect_test _ =
 
 let%expect_test _ =
   parse "(val foo: Nat = 7, val bar: Bool = False, mut baz: Str = \"baz\",)"
+    "test.zt"
   |> show_ast |> print_endline;
   [%expect
     {|
@@ -1558,15 +1590,17 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "proc" in
-  assert_raises (UnexpectedEOF { row = 1; col = 5 }) f
+  let f () = parse "proc" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 5 }) f
 
 let%test_unit _ =
-  let f () = parse "proc*" in
-  assert_raises (UnexpectedToken (Astr, { row = 1; col = 5 })) f
+  let f () = parse "proc*" "test.zt" in
+  assert_raises
+    (UnexpectedToken (Astr, { path = "test.zt"; row = 1; col = 5 }))
+    f
 
 let%expect_test _ =
-  parse "proc()" |> show_ast |> print_endline;
+  parse "proc()" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
       { Parse.inner =
@@ -1576,7 +1610,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "proc(): Nat" |> show_ast |> print_endline;
+  parse "proc(): Nat" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1588,7 +1622,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "proc() { () }" |> show_ast |> print_endline;
+  parse "proc() { () }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1600,7 +1634,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "proc(): Nat { 1 }" |> show_ast |> print_endline;
+  parse "proc(): Nat { 1 }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1614,7 +1648,8 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "proc(): { if False Nat else Int } { 1 }" |> show_ast |> print_endline;
+  parse "proc(): { if False Nat else Int } { 1 }" "test.zt"
+  |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1646,7 +1681,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "foo.bar" |> show_ast |> print_endline;
+  parse "foo.bar" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1657,7 +1692,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "foo()" |> show_ast |> print_endline;
+  parse "foo()" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1668,7 +1703,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "foo(5, 'o', bar)" |> show_ast |> print_endline;
+  parse "foo(5, 'o', bar)" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1697,35 +1732,39 @@ let%expect_test _ =
   |}]
 
 let%test_unit _ =
-  let f () = parse "foo.=" in
-  assert_raises (UnexpectedToken (Assign, { row = 1; col = 5 })) f
+  let f () = parse "foo.=" "test.zt" in
+  assert_raises
+    (UnexpectedToken (Assign, { path = "test.zt"; row = 1; col = 5 }))
+    f
 
 let%test_unit _ =
-  let f () = parse "(" in
-  assert_raises (UnexpectedEOF { row = 1; col = 2 }) f
+  let f () = parse "(" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 2 }) f
 
 let%test_unit _ =
-  let f () = parse "(proc" in
-  assert_raises (UnexpectedEOF { row = 1; col = 6 }) f
+  let f () = parse "(proc" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let f () = parse "(foo" in
-  assert_raises (UnexpectedEOF { row = 1; col = 5 }) f
+  let f () = parse "(foo" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 5 }) f
 
 let%test_unit _ =
-  let f () = parse "(foo: Bar" in
-  assert_raises (UnexpectedEOF { row = 1; col = 10 }) f
+  let f () = parse "(foo: Bar" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 10 }) f
 
 let%test_unit _ =
-  let f () = parse "(foo: Bar = 5" in
-  assert_raises (UnexpectedEOF { row = 1; col = 14 }) f
+  let f () = parse "(foo: Bar = 5" "test.zt" in
+  assert_raises (UnexpectedEOF { path = "test.zt"; row = 1; col = 14 }) f
 
 let%test_unit _ =
-  let f () = parse "(foo: Bar = 5[" in
-  assert_raises (UnexpectedToken (OpenSquareBrkt, { row = 1; col = 14 })) f
+  let f () = parse "(foo: Bar = 5[" "test.zt" in
+  assert_raises
+    (UnexpectedToken (OpenSquareBrkt, { path = "test.zt"; row = 1; col = 14 }))
+    f
 
 let%expect_test _ =
-  parse "!5 && 9.foo" |> show_ast |> print_endline;
+  parse "!5 && 9.foo" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1742,7 +1781,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "-foo.bar()" |> show_ast |> print_endline;
+  parse "-foo.bar()" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1759,7 +1798,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "!foo().bar().baz()" |> show_ast |> print_endline;
+  parse "!foo().bar().baz()" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1785,7 +1824,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "!foo().bar().baz()" |> show_ast |> print_endline;
+  parse "!foo().bar().baz()" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1811,7 +1850,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "-foo.bar" |> show_ast |> print_endline;
+  parse "-foo.bar" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1825,7 +1864,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "i + 2 == j + 1" |> show_ast |> print_endline;
+  parse "i + 2 == j + 1" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =
@@ -1845,7 +1884,7 @@ let%expect_test _ =
   |}]
 
 let%expect_test _ =
-  parse "{ a.b = c }" |> show_ast |> print_endline;
+  parse "{ a.b = c }" "test.zt" |> show_ast |> print_endline;
   [%expect
     {|
     { Parse.inner =

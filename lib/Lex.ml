@@ -39,7 +39,7 @@ type token =
 
 [@@@coverage off]
 
-type pos = { row : int; col : int } [@@deriving compare, sexp]
+type pos = { path : string; row : int; col : int } [@@deriving compare, sexp]
 
 [@@@coverage on]
 
@@ -51,7 +51,7 @@ type state = { text : string; pos : pos } [@@deriving compare, sexp]
 
 [@@@coverage on]
 
-let state_from text = { text; pos = { row = 1; col = 1 } }
+let state_from text path = { text; pos = { path; row = 1; col = 1 } }
 
 let advanced s =
   match s.text with
@@ -60,8 +60,8 @@ let advanced s =
       let head = non_empty.[0] in
       let tail = String.sub non_empty 1 (String.length non_empty - 1) in
       let pos =
-        if head = '\n' then { row = s.pos.row + 1; col = 1 }
-        else { row = s.pos.row; col = s.pos.col + 1 }
+        if head = '\n' then { s.pos with row = s.pos.row + 1; col = 1 }
+        else { s.pos with col = s.pos.col + 1 }
       in
       Some (head, { text = tail; pos })
 
@@ -101,18 +101,21 @@ type string_state_tuple = string * state [@@deriving compare, sexp]
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "_foo651 ***" |> lex_ident_rest)
-    ~expect:("_foo651", { text = " ***"; pos = { row = 1; col = 8 } })
+    (state_from "_foo651 ***" "test.zt" |> lex_ident_rest)
+    ~expect:
+      ( "_foo651",
+        { text = " ***"; pos = { path = "test.zt"; row = 1; col = 8 } } )
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "651***" |> lex_ident_rest)
-    ~expect:("651", { text = "***"; pos = { row = 1; col = 4 } })
+    (state_from "651***" "test.zt" |> lex_ident_rest)
+    ~expect:
+      ("651", { text = "***"; pos = { path = "test.zt"; row = 1; col = 4 } })
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "" |> lex_ident_rest)
-    ~expect:("", { text = ""; pos = { row = 1; col = 1 } })
+    (state_from "" "test.zt" |> lex_ident_rest)
+    ~expect:("", { text = ""; pos = { path = "test.zt"; row = 1; col = 1 } })
 
 let rec lex_num_rest s =
   with_advanced_or s ("", s) (fun head advanced ->
@@ -124,18 +127,22 @@ let rec lex_num_rest s =
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "0123456789" |> lex_num_rest)
-    ~expect:("0123456789", { text = ""; pos = { row = 1; col = 11 } })
+    (state_from "0123456789" "test.zt" |> lex_num_rest)
+    ~expect:
+      ( "0123456789",
+        { text = ""; pos = { path = "test.zt"; row = 1; col = 11 } } )
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "0123456789 ***" |> lex_num_rest)
-    ~expect:("0123456789", { text = " ***"; pos = { row = 1; col = 11 } })
+    (state_from "0123456789 ***" "test.zt" |> lex_num_rest)
+    ~expect:
+      ( "0123456789",
+        { text = " ***"; pos = { path = "test.zt"; row = 1; col = 11 } } )
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "" |> lex_num_rest)
-    ~expect:("", { text = ""; pos = { row = 1; col = 1 } })
+    (state_from "" "test.zt" |> lex_num_rest)
+    ~expect:("", { text = ""; pos = { path = "test.zt"; row = 1; col = 1 } })
 
 let ident_keywd_of = function
   | "brk" -> Keywd Brk
@@ -179,50 +186,58 @@ type char_state_tuple = char * state [@@deriving compare, sexp]
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "n" |> lex_char_escape_rest)
-    ~expect:('\n', { text = ""; pos = { row = 1; col = 2 } })
+    (state_from "n" "test.zt" |> lex_char_escape_rest)
+    ~expect:('\n', { text = ""; pos = { path = "test.zt"; row = 1; col = 2 } })
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "r " |> lex_char_escape_rest)
-    ~expect:('\r', { text = " "; pos = { row = 1; col = 2 } })
+    (state_from "r " "test.zt" |> lex_char_escape_rest)
+    ~expect:('\r', { text = " "; pos = { path = "test.zt"; row = 1; col = 2 } })
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "to" |> lex_char_escape_rest)
-    ~expect:('\t', { text = "o"; pos = { row = 1; col = 2 } })
+    (state_from "to" "test.zt" |> lex_char_escape_rest)
+    ~expect:('\t', { text = "o"; pos = { path = "test.zt"; row = 1; col = 2 } })
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "0*" |> lex_char_escape_rest)
-    ~expect:(char_of_int 0, { text = "*"; pos = { row = 1; col = 2 } })
+    (state_from "0*" "test.zt" |> lex_char_escape_rest)
+    ~expect:
+      ( char_of_int 0,
+        { text = "*"; pos = { path = "test.zt"; row = 1; col = 2 } } )
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "\\'" |> lex_char_escape_rest)
-    ~expect:('\\', { text = "'"; pos = { row = 1; col = 2 } })
+    (state_from "\\'" "test.zt" |> lex_char_escape_rest)
+    ~expect:('\\', { text = "'"; pos = { path = "test.zt"; row = 1; col = 2 } })
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "''" |> lex_char_escape_rest)
-    ~expect:('\'', { text = "'"; pos = { row = 1; col = 2 } })
+    (state_from "''" "test.zt" |> lex_char_escape_rest)
+    ~expect:('\'', { text = "'"; pos = { path = "test.zt"; row = 1; col = 2 } })
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "\"'" |> lex_string_escape_rest)
-    ~expect:('"', { text = "'"; pos = { row = 1; col = 2 } })
+    (state_from "\"'" "test.zt" |> lex_string_escape_rest)
+    ~expect:('"', { text = "'"; pos = { path = "test.zt"; row = 1; col = 2 } })
 
 let%test_unit _ =
-  let f () = state_from "" |> lex_char_escape_rest in
-  assert_raises (UnterminatedEscapeSequence { row = 1; col = 1 }) f
+  let f () = state_from "" "test.zt" |> lex_char_escape_rest in
+  assert_raises
+    (UnterminatedEscapeSequence { path = "test.zt"; row = 1; col = 1 })
+    f
 
 let%test_unit _ =
-  let f () = state_from "\"" |> lex_char_escape_rest in
-  assert_raises (InvalidEscapeSequence ('"', { row = 1; col = 1 })) f
+  let f () = state_from "\"" "test.zt" |> lex_char_escape_rest in
+  assert_raises
+    (InvalidEscapeSequence ('"', { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test_unit _ =
-  let f () = state_from "'" |> lex_string_escape_rest in
-  assert_raises (InvalidEscapeSequence ('\'', { row = 1; col = 1 })) f
+  let f () = state_from "'" "test.zt" |> lex_string_escape_rest in
+  assert_raises
+    (InvalidEscapeSequence ('\'', { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 exception UnterminatedString of pos
 
@@ -240,25 +255,29 @@ let rec lex_string_rest s =
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "foo\" bar" |> lex_string_rest)
-    ~expect:("foo", { text = " bar"; pos = { row = 1; col = 5 } })
+    (state_from "foo\" bar" "test.zt" |> lex_string_rest)
+    ~expect:
+      ("foo", { text = " bar"; pos = { path = "test.zt"; row = 1; col = 5 } })
 
 let%test_unit _ =
   [%test_result: string_state_tuple]
-    (state_from "foo\\n\" bar" |> lex_string_rest)
-    ~expect:("foo\n", { text = " bar"; pos = { row = 1; col = 7 } })
+    (state_from "foo\\n\" bar" "test.zt" |> lex_string_rest)
+    ~expect:
+      ("foo\n", { text = " bar"; pos = { path = "test.zt"; row = 1; col = 7 } })
 
 let%test_unit _ =
-  let f () = state_from "\\q" |> lex_string_rest in
-  assert_raises (InvalidEscapeSequence ('q', { row = 1; col = 2 })) f
+  let f () = state_from "\\q" "test.zt" |> lex_string_rest in
+  assert_raises
+    (InvalidEscapeSequence ('q', { path = "test.zt"; row = 1; col = 2 }))
+    f
 
 let%test_unit _ =
-  let f () = state_from "" |> lex_string_rest in
-  assert_raises (UnterminatedString { row = 1; col = 1 }) f
+  let f () = state_from "" "test.zt" |> lex_string_rest in
+  assert_raises (UnterminatedString { path = "test.zt"; row = 1; col = 1 }) f
 
 let%test_unit _ =
-  let f () = state_from "foo" |> lex_string_rest in
-  assert_raises (UnterminatedString { row = 1; col = 4 }) f
+  let f () = state_from "foo" "test.zt" |> lex_string_rest in
+  assert_raises (UnterminatedString { path = "test.zt"; row = 1; col = 4 }) f
 
 exception UnterminatedRune of pos
 exception EmptyRune of pos
@@ -279,46 +298,48 @@ let lex_rune_rest s =
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from " 'foo" |> lex_rune_rest)
-    ~expect:(' ', { text = "foo"; pos = { row = 1; col = 3 } })
+    (state_from " 'foo" "test.zt" |> lex_rune_rest)
+    ~expect:(' ', { text = "foo"; pos = { path = "test.zt"; row = 1; col = 3 } })
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "f''''" |> lex_rune_rest)
-    ~expect:('f', { text = "'''"; pos = { row = 1; col = 3 } })
+    (state_from "f''''" "test.zt" |> lex_rune_rest)
+    ~expect:('f', { text = "'''"; pos = { path = "test.zt"; row = 1; col = 3 } })
 
 let%test_unit _ =
   [%test_result: char_state_tuple]
-    (state_from "\\n' " |> lex_rune_rest)
-    ~expect:('\n', { text = " "; pos = { row = 1; col = 4 } })
+    (state_from "\\n' " "test.zt" |> lex_rune_rest)
+    ~expect:('\n', { text = " "; pos = { path = "test.zt"; row = 1; col = 4 } })
 
 let%test_unit _ =
-  let f () = state_from "" |> lex_rune_rest in
-  assert_raises (UnterminatedRune { col = 1; row = 1 }) f
+  let f () = state_from "" "test.zt" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { path = "test.zt"; col = 1; row = 1 }) f
 
 let%test_unit _ =
-  let f () = state_from "'" |> lex_rune_rest in
-  assert_raises (EmptyRune { col = 1; row = 1 }) f
+  let f () = state_from "'" "test.zt" |> lex_rune_rest in
+  assert_raises (EmptyRune { path = "test.zt"; col = 1; row = 1 }) f
 
 let%test_unit _ =
-  let f () = state_from "\\q" |> lex_rune_rest in
-  assert_raises (InvalidEscapeSequence ('q', { row = 1; col = 2 })) f
+  let f () = state_from "\\q" "test.zt" |> lex_rune_rest in
+  assert_raises
+    (InvalidEscapeSequence ('q', { path = "test.zt"; row = 1; col = 2 }))
+    f
 
 let%test_unit _ =
-  let f () = state_from "\\n" |> lex_rune_rest in
-  assert_raises (UnterminatedRune { row = 1; col = 3 }) f
+  let f () = state_from "\\n" "test.zt" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { path = "test.zt"; row = 1; col = 3 }) f
 
 let%test_unit _ =
-  let f () = state_from "\\nf" |> lex_rune_rest in
-  assert_raises (UnterminatedRune { row = 1; col = 3 }) f
+  let f () = state_from "\\nf" "test.zt" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { path = "test.zt"; row = 1; col = 3 }) f
 
 let%test_unit _ =
-  let f () = state_from "f" |> lex_rune_rest in
-  assert_raises (UnterminatedRune { row = 1; col = 2 }) f
+  let f () = state_from "f" "test.zt" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { path = "test.zt"; row = 1; col = 2 }) f
 
 let%test_unit _ =
-  let f () = state_from "ff'" |> lex_rune_rest in
-  assert_raises (UnterminatedRune { row = 1; col = 2 }) f
+  let f () = state_from "ff'" "test.zt" |> lex_rune_rest in
+  assert_raises (UnterminatedRune { path = "test.zt"; row = 1; col = 2 }) f
 
 let rec lex_comment_rest state : state =
   with_advanced_or state state (fun head advanced ->
@@ -326,25 +347,25 @@ let rec lex_comment_rest state : state =
 
 let%test_unit _ =
   [%test_result: state]
-    (state_from "" |> lex_comment_rest)
-    ~expect:{ text = ""; pos = { row = 1; col = 1 } }
+    (state_from "" "test.zt" |> lex_comment_rest)
+    ~expect:{ text = ""; pos = { path = "test.zt"; row = 1; col = 1 } }
 
 let%test_unit _ =
   [%test_result: state]
-    (state_from "\n foo bar" |> lex_comment_rest)
-    ~expect:{ text = " foo bar"; pos = { row = 2; col = 1 } }
+    (state_from "\n foo bar" "test.zt" |> lex_comment_rest)
+    ~expect:{ text = " foo bar"; pos = { path = "test.zt"; row = 2; col = 1 } }
 
 let%test_unit _ =
   [%test_result: state]
-    (state_from "asdf65**+%*-89651\n foo bar" |> lex_comment_rest)
-    ~expect:{ text = " foo bar"; pos = { row = 2; col = 1 } }
+    (state_from "asdf65**+%*-89651\n foo bar" "test.zt" |> lex_comment_rest)
+    ~expect:{ text = " foo bar"; pos = { path = "test.zt"; row = 2; col = 1 } }
 
 exception UnexpectedChar of char * pos
 
 let () =
   Printexc.register_printer (function
-    | UnexpectedChar (char, { row; col }) ->
-        Some (Printf.sprintf "%d:%d: unexpected char: %C" row col char)
+    | UnexpectedChar (char, { path; row; col }) ->
+        Some (Printf.sprintf "%s:%d:%d: unexpected char: %C" path row col char)
     | _ -> None)
 
 exception UnterminatedAnd of pos
@@ -417,10 +438,11 @@ let rec lex' s =
       let { tokens = tokens_rest; end_pos } = lex' after in
       { tokens = tokens @ tokens_rest; end_pos })
 
-let lex text = state_from text |> lex'
+let lex text path = state_from text path |> lex'
 
 let%expect_test _ =
-  lex "_foo\t_13651\nBar_651 Iljbzlskmvk" |> show_lex_result |> print_endline;
+  lex "_foo\t_13651\nBar_651 Iljbzlskmvk" "test.zt"
+  |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -430,7 +452,8 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "0123456789 91555 31512 11 3" |> show_lex_result |> print_endline;
+  lex "0123456789 91555 31512 11 3" "test.zt"
+  |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -440,7 +463,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "brk ctn else if loop mut proc ret val"
+  lex "brk ctn else if loop mut proc ret val" "test.zt"
   |> show_lex_result |> print_endline;
   [%expect
     {|
@@ -454,7 +477,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "\"foo\" \"bar\\n\"" |> show_lex_result |> print_endline;
+  lex "\"foo\" \"bar\\n\"" "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens = [((Lex.String "foo"), 1:1); ((Lex.String "bar\n"), 1:7)];
@@ -462,7 +485,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "'f' '\\n' '\\\\' " |> show_lex_result |> print_endline;
+  lex "'f' '\\n' '\\\\' " "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -471,7 +494,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "= =a =" |> show_lex_result |> print_endline;
+  lex "= =a =" "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -481,7 +504,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "+ - * / % ++ -- *=" |> show_lex_result |> print_endline;
+  lex "+ - * / % ++ -- *=" "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -492,7 +515,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "&& || ! !" |> show_lex_result |> print_endline;
+  lex "&& || ! !" "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -501,23 +524,23 @@ let%expect_test _ =
     |}]
 
 let%test_unit _ =
-  let f () = lex "&" in
-  assert_raises (UnterminatedAnd { row = 1; col = 2 }) f
+  let f () = lex "&" "test.zt" in
+  assert_raises (UnterminatedAnd { path = "test.zt"; row = 1; col = 2 }) f
 
 let%test_unit _ =
-  let f () = lex "& " in
-  assert_raises (UnterminatedAnd { row = 1; col = 2 }) f
+  let f () = lex "& " "test.zt" in
+  assert_raises (UnterminatedAnd { path = "test.zt"; row = 1; col = 2 }) f
 
 let%test_unit _ =
-  let f () = lex "|" in
-  assert_raises (UnterminatedOr { row = 1; col = 2 }) f
+  let f () = lex "|" "test.zt" in
+  assert_raises (UnterminatedOr { path = "test.zt"; row = 1; col = 2 }) f
 
 let%test_unit _ =
-  let f () = lex "| " in
-  assert_raises (UnterminatedOr { row = 1; col = 2 }) f
+  let f () = lex "| " "test.zt" in
+  assert_raises (UnterminatedOr { path = "test.zt"; row = 1; col = 2 }) f
 
 let%expect_test _ =
-  lex "== != <= < <" |> show_lex_result |> print_endline;
+  lex "== != <= < <" "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -527,7 +550,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "() [] {} ( [ { ) ] }" |> show_lex_result |> print_endline;
+  lex "() [] {} ( [ { ) ] }" "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens =
@@ -541,7 +564,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex ": . ," |> show_lex_result |> print_endline;
+  lex ": . ," "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens = [(Lex.Colon, 1:1); (Lex.Dot, 1:3); (Lex.Comma, 1:5)];
@@ -549,7 +572,7 @@ let%expect_test _ =
     |}]
 
 let%expect_test _ =
-  lex "foo # comment\nbar" |> show_lex_result |> print_endline;
+  lex "foo # comment\nbar" "test.zt" |> show_lex_result |> print_endline;
   [%expect
     {|
       { Lex.tokens = [((Lex.Ident "foo"), 1:1); ((Lex.Ident "bar"), 2:1)];
@@ -557,5 +580,5 @@ let%expect_test _ =
     |}]
 
 let%test_unit _ =
-  let f () = lex "$ " in
-  assert_raises (UnexpectedChar ('$', { col = 1; row = 1 })) f
+  let f () = lex "$ " "test.zt" in
+  assert_raises (UnexpectedChar ('$', { path = "test.zt"; col = 1; row = 1 })) f

@@ -33,10 +33,10 @@ exception UseBeforeInitialization of string * Lex.pos
 
 let () =
   Printexc.register_printer (function
-    | UseBeforeInitialization (name, { row; col }) ->
+    | UseBeforeInitialization (name, { path; row; col }) ->
         Some
-          (Printf.sprintf "%d:%d: use of \"%s\" before initialization" row col
-             name)
+          (Printf.sprintf "%s:%d:%d: use of \"%s\" before initialization" path
+             row col name)
     | _ -> None)
 
 let value_from_scope_entry name pos = function
@@ -70,26 +70,28 @@ exception NumAsArgumentName of Lex.pos
 
 let () =
   Printexc.register_printer (function
-    | NumAsArgumentName { row; col } ->
-        Some (Printf.sprintf "%d:%d: number specified as argument name" row col)
+    | NumAsArgumentName { path; row; col } ->
+        Some
+          (Printf.sprintf "%s:%d:%d: number specified as argument name" path row
+             col)
     | _ -> None)
 
 exception ValueAsArgument of Lex.pos
 
 let () =
   Printexc.register_printer (function
-    | ValueAsArgument { row; col } ->
+    | ValueAsArgument { path; row; col } ->
         Some
-          (Printf.sprintf "%d:%d: value specified in function declaration" row
-             col)
+          (Printf.sprintf "%s:%d:%d: value specified in function declaration"
+             path row col)
     | _ -> None)
 
 exception MutArgument of Lex.pos
 
 let () =
   Printexc.register_printer (function
-    | MutArgument { row; col } ->
-        Some (Printf.sprintf "%d:%d: argument specified as mut" row col)
+    | MutArgument { path; row; col } ->
+        Some (Printf.sprintf "%s:%d:%d: argument specified as mut" path row col)
     | _ -> None)
 
 let rec args_names = function
@@ -133,8 +135,9 @@ exception UnboundIdent of string * Lex.pos
 
 let () =
   Printexc.register_printer (function
-    | UnboundIdent (name, { row; col }) ->
-        Some (Printf.sprintf "%d:%d: unbound ident: \"%s\"" row col name)
+    | UnboundIdent (name, { path; row; col }) ->
+        Some
+          (Printf.sprintf "%s:%d:%d: unbound ident: \"%s\"" path row col name)
     | _ -> None)
 
 exception Redeclaration of string * Lex.pos
@@ -535,11 +538,11 @@ let exec_ast ast =
 exception ExpectedProc
 
 let exec path =
-  let text = Core.In_channel.read_lines path in
-  let ast = String.concat "\n" text |> Parse.parse in
+  let text = Core.In_channel.read_lines path |> String.concat "\n" in
+  let ast = Parse.parse text path in
   let _ =
     match exec_ast ast with
-    | Proc f -> f [] { row = 0; col = 0 }
+    | Proc f -> f [] { path; row = 0; col = 0 }
     | _ -> raise ExpectedProc
   in
   ()
@@ -548,254 +551,278 @@ let assert_raises = OUnit2.assert_raises
 let parse = Parse.parse
 
 let%test _ =
-  let ast = parse "5 + 9" in
+  let ast = parse "5 + 9" "test.zt" in
   Num 14 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "5 == True" in
-  let f () = exec_ast ast in
-  assert_raises
-    (InvalidBinopOperands (Num 5, bool_from_bool true, { row = 1; col = 1 }))
-    f
-
-let%test_unit _ =
-  let ast = parse "False + True" in
+  let ast = parse "5 == True" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands
-       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
+       (Num 5, bool_from_bool true, { path = "test.zt"; row = 1; col = 1 }))
+    f
+
+let%test_unit _ =
+  let ast = parse "False + True" "test.zt" in
+  let f () = exec_ast ast in
+  assert_raises
+    (InvalidBinopOperands
+       ( bool_from_bool false,
+         bool_from_bool true,
+         { path = "test.zt"; row = 1; col = 1 } ))
     f
 
 let%test _ =
-  let ast = parse "5 - 9" in
+  let ast = parse "5 - 9" "test.zt" in
   Num (-4) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False - True" in
+  let ast = parse "False - True" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands
-       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
+       ( bool_from_bool false,
+         bool_from_bool true,
+         { path = "test.zt"; row = 1; col = 1 } ))
     f
 
 let%test _ =
-  let ast = parse "5 * 9" in
+  let ast = parse "5 * 9" "test.zt" in
   Num 45 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False * True" in
+  let ast = parse "False * True" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands
-       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
+       ( bool_from_bool false,
+         bool_from_bool true,
+         { path = "test.zt"; row = 1; col = 1 } ))
     f
 
 let%test _ =
-  let ast = parse "5 / 9" in
+  let ast = parse "5 / 9" "test.zt" in
   Num 0 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False / True" in
+  let ast = parse "False / True" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands
-       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
+       ( bool_from_bool false,
+         bool_from_bool true,
+         { path = "test.zt"; row = 1; col = 1 } ))
     f
 
 let%test _ =
-  let ast = parse "5 % 9" in
+  let ast = parse "5 % 9" "test.zt" in
   Num 5 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False % True" in
+  let ast = parse "False % True" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands
-       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
+       ( bool_from_bool false,
+         bool_from_bool true,
+         { path = "test.zt"; row = 1; col = 1 } ))
     f
 
 let%test _ =
-  let ast = parse "True && False" in
+  let ast = parse "True && False" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "True && True" in
+  let ast = parse "True && True" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "5 && 9" in
+  let ast = parse "5 && 9" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidBinopOperands (Num 5, Num 9, { row = 1; col = 1 })) f
+  assert_raises
+    (InvalidBinopOperands (Num 5, Num 9, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test _ =
-  let ast = parse "False || True" in
+  let ast = parse "False || True" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "True || False" in
+  let ast = parse "True || False" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "False || False" in
+  let ast = parse "False || False" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "5 || 9" in
+  let ast = parse "5 || 9" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidBinopOperands (Num 5, Num 9, { row = 1; col = 1 })) f
+  assert_raises
+    (InvalidBinopOperands (Num 5, Num 9, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test _ =
-  let ast = parse "!False" in
+  let ast = parse "!False" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "!True" in
+  let ast = parse "!True" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "!5" in
+  let ast = parse "!5" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidUnaryOperand (Num 5, { row = 1; col = 1 })) f
+  assert_raises
+    (InvalidUnaryOperand (Num 5, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test _ =
-  let ast = parse "-5" in
+  let ast = parse "-5" "test.zt" in
   Num (-5) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "-False" in
+  let ast = parse "-False" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidUnaryOperand (bool_from_bool false, { row = 1; col = 1 }))
+    (InvalidUnaryOperand
+       (bool_from_bool false, { path = "test.zt"; row = 1; col = 1 }))
     f
 
 let%test _ =
-  let ast = parse "False == True" in
+  let ast = parse "False == True" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "True == True" in
+  let ast = parse "True == True" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 == 9" in
+  let ast = parse "5 == 9" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 == 5" in
+  let ast = parse "5 == 5" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' == 'q'" in
+  let ast = parse "'r' == 'q'" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' == 'r'" in
+  let ast = parse "'r' == 'r'" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "False != True" in
+  let ast = parse "False != True" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "True != True" in
+  let ast = parse "True != True" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 != 9" in
+  let ast = parse "5 != 9" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 != 5" in
+  let ast = parse "5 != 5" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' != 'q'" in
+  let ast = parse "'r' != 'q'" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' != 'r'" in
+  let ast = parse "'r' != 'r'" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 <= 5" in
+  let ast = parse "5 <= 5" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "9 <= 5" in
+  let ast = parse "9 <= 5" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' <= 'q'" in
+  let ast = parse "'r' <= 'q'" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'q' <= 'q'" in
+  let ast = parse "'q' <= 'q'" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False <= True" in
+  let ast = parse "False <= True" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands
-       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
+       ( bool_from_bool false,
+         bool_from_bool true,
+         { path = "test.zt"; row = 1; col = 1 } ))
     f
 
 let%test _ =
-  let ast = parse "5 < 5" in
+  let ast = parse "5 < 5" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 < 9" in
+  let ast = parse "5 < 9" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' < 'r'" in
+  let ast = parse "'r' < 'r'" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'q' <= 'r'" in
+  let ast = parse "'q' <= 'r'" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False < True" in
+  let ast = parse "False < True" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands
-       (bool_from_bool false, bool_from_bool true, { row = 1; col = 1 }))
+       ( bool_from_bool false,
+         bool_from_bool true,
+         { path = "test.zt"; row = 1; col = 1 } ))
     f
 
 let%test _ =
-  let ast = parse "if True 5 else 9" in
+  let ast = parse "if True 5 else 9" "test.zt" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if False 5 else 9" in
+  let ast = parse "if False 5 else 9" "test.zt" in
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if False 5" in
+  let ast = parse "if False 5" "test.zt" in
   unit_val = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "if 9 5 else 9" in
+  let ast = parse "if 9 5 else 9" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidIfCond (Num 9, { row = 1; col = 1 })) f
+  assert_raises
+    (InvalidIfCond (Num 9, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test _ =
-  let ast = parse "()" in
+  let ast = parse "()" "test.zt" in
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9)" in
+  let ast = parse "(val i = 9)" "test.zt" in
   Prod [ { name = "i"; entry = Val (Num 9) } ] = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "(val i = 9, val i = 9)" in
+  let ast = parse "(val i = 9, val i = 9)" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (Redeclaration ("i", { row = 1; col = 13 })) f
+  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 1; col = 13 })) f
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True)" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True)" "test.zt" in
   Prod
     [
       { name = "i"; entry = Val (Num 9) };
@@ -805,39 +832,41 @@ let%test _ =
   = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9).i" in
+  let ast = parse "(val i = 9).i" "test.zt" in
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).j" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).j" "test.zt" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" "test.zt" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "().i" in
+  let ast = parse "().i" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidField ("i", { row = 1; col = 4 })) f
+  assert_raises (InvalidField ("i", { path = "test.zt"; row = 1; col = 4 })) f
 
 let%test_unit _ =
-  let ast = parse "1.i" in
+  let ast = parse "1.i" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidAccess (Num 1, { row = 1; col = 1 })) f
+  assert_raises
+    (InvalidAccess (Num 1, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test _ =
-  let ast = parse "[]" in
+  let ast = parse "[]" "test.zt" in
   match exec_ast ast with
   | Type (Sum { id' = _; variants = [] }) -> true
   | _ -> false
 
 let%test _ =
-  let ast = parse "[Red, Green(Num), Blue(Rune)]" in
+  let ast = parse "[Red, Green(Num), Blue(Rune)]" "test.zt" in
   match exec_ast ast with
   | Type
       (Sum
@@ -854,38 +883,40 @@ let%test _ =
   | _ -> false
 
 let%test _ =
-  let ast = parse "[Red].Red" in
+  let ast = parse "[Red].Red" "test.zt" in
   match exec_ast ast with
   | SumVariant { id = _; disc = _; field = None } -> true
   | _ -> false
 
 let%test _ =
-  let ast = parse "[Green(Num)].Green(value = 5)" in
+  let ast = parse "[Green(Num)].Green(value = 5)" "test.zt" in
   match exec_ast ast with
   | SumVariant { id = _; disc = _; field = Some (Num 5) } -> true
   | _ -> false
 
 let%test_unit _ =
-  let ast = parse "[Green(Num)].Green(foo = 5)" in
+  let ast = parse "[Green(Num)].Green(foo = 5)" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidCallArgs
        ( [ "value" ],
          [ { name = "foo"; entry = Val (Num 5) } ],
-         { row = 1; col = 19 } ))
+         { path = "test.zt"; row = 1; col = 19 } ))
     f
 
 let%test_unit _ =
-  let ast = parse "[].Blue" in
+  let ast = parse "[].Blue" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidField ("Blue", { row = 1; col = 4 })) f
+  assert_raises
+    (InvalidField ("Blue", { path = "test.zt"; row = 1; col = 4 }))
+    f
 
 let%test _ =
   (*
   The two sums are separate, so the variants aren't equal though they happen to
   have the same names
   *)
-  let ast = parse "[Red].Red == [Red].Red" in
+  let ast = parse "[Red].Red == [Red].Red" "test.zt" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
@@ -897,6 +928,7 @@ let%test _ =
       ret sum.Green == sum.Green
     }()
   |}
+      "test.zt"
   in
   bool_from_bool true = exec_ast ast
 
@@ -909,6 +941,7 @@ let%test _ =
       ret sum.Green(value = 5) == sum.Green(value = 5)
     }()
   |}
+      "test.zt"
   in
   bool_from_bool true = exec_ast ast
 
@@ -921,6 +954,7 @@ let%test _ =
       ret sum.Green(value = 5) == sum.Green(value = 9)
     }()
   |}
+      "test.zt"
   in
   bool_from_bool false = exec_ast ast
 
@@ -933,69 +967,81 @@ let%test _ =
       ret sum.Green(value = 5) == sum.Blue(value = 5)
     }()
   |}
+      "test.zt"
   in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "[].Blue" in
+  let ast = parse "[].Blue" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidField ("Blue", { row = 1; col = 4 })) f
+  assert_raises
+    (InvalidField ("Blue", { path = "test.zt"; row = 1; col = 4 }))
+    f
 
 let%test_unit _ =
-  let ast = parse "[Blue(5)]" in
+  let ast = parse "[Blue(5)]" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (ValueAsType (Num 5, { row = 1; col = 7 })) f
+  assert_raises (ValueAsType (Num 5, { path = "test.zt"; row = 1; col = 7 })) f
 
 let%test _ =
-  let ast = parse "{ proc() { } }()" in
+  let ast = parse "{ proc() { } }()" "test.zt" in
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc(val i: Nat) { i + 1 } }(val i = 2)" in
+  let ast = parse "{ proc(val i: Nat) { i + 1 } }(val i = 2)" "test.zt" in
   Num 3 = exec_ast ast
 
 let%test _ =
   let ast =
     parse "{ proc(val i: Nat, val j: Nat) { i * j } }(val i = 2, val j = 9)"
+      "test.zt"
   in
   Num 18 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc(val i, j: Nat) { i * j } }(val i = 2, val j = 9)" in
+  let ast =
+    parse "{ proc(val i, j: Nat) { i * j } }(val i = 2, val j = 9)" "test.zt"
+  in
   Num 18 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "{ proc(val i: Nat) { i } }(val j = 2)" in
+  let ast = parse "{ proc(val i: Nat) { i } }(val j = 2)" "test.zt" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidCallArgs
-       ([ "i" ], [ { name = "j"; entry = Val (Num 2) } ], { row = 1; col = 27 }))
+       ( [ "i" ],
+         [ { name = "j"; entry = Val (Num 2) } ],
+         { path = "test.zt"; row = 1; col = 27 } ))
     f
 
 let%test_unit _ =
-  let ast = parse "{ proc(val i: Nat) { i } }()" in
+  let ast = parse "{ proc(val i: Nat) { i } }()" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidCallArgs ([ "i" ], [], { row = 1; col = 27 })) f
+  assert_raises
+    (InvalidCallArgs ([ "i" ], [], { path = "test.zt"; row = 1; col = 27 }))
+    f
 
 let%test_unit _ =
-  let ast = parse "proc(mut i: Nat) { i }" in
+  let ast = parse "proc(mut i: Nat) { i }" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (MutArgument { row = 1; col = 6 }) f
+  assert_raises (MutArgument { path = "test.zt"; row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let ast = parse "proc(val 5: Nat) { }" in
+  let ast = parse "proc(val 5: Nat) { }" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (NumAsArgumentName { row = 1; col = 10 }) f
+  assert_raises (NumAsArgumentName { path = "test.zt"; row = 1; col = 10 }) f
 
 let%test_unit _ =
-  let ast = parse "proc('a') { }" in
+  let ast = parse "proc('a') { }" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (ValueAsArgument { row = 1; col = 6 }) f
+  assert_raises (ValueAsArgument { path = "test.zt"; row = 1; col = 6 }) f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { foo } }()" in
+  let ast = parse "{ proc() { foo } }()" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (UnboundIdent ("foo", { row = 1; col = 12 })) f
+  assert_raises
+    (UnboundIdent ("foo", { path = "test.zt"; row = 1; col = 12 }))
+    f
 
 let%test _ =
   let ast =
@@ -1012,6 +1058,7 @@ let%test _ =
       }
     }()
   |}
+      "test.zt"
   in
   Num 2 = exec_ast ast
 
@@ -1026,9 +1073,12 @@ let%test_unit _ =
       }
     }()
   |}
+      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (UseBeforeInitialization ("i", { row = 5; col = 13 })) f
+  assert_raises
+    (UseBeforeInitialization ("i", { path = "test.zt"; row = 5; col = 13 }))
+    f
 
 let%test _ =
   let ast =
@@ -1053,11 +1103,12 @@ let%test _ =
       }
     }()
   |}
+      "test.zt"
   in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { loop { ret 'a' } } }()" in
+  let ast = parse "{ proc() { loop { ret 'a' } } }()" "test.zt" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
@@ -1074,46 +1125,49 @@ let%test _ =
       }
     }()
   |}
+      "test.zt"
   in
   Num 9 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "{ proc() { brk } }()" in
+  let ast = parse "{ proc() { brk } }()" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { row = 1; col = 12 }) f
+  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 12 }) f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { ctn } }()" in
+  let ast = parse "{ proc() { ctn } }()" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { row = 1; col = 12 }) f
+  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 12 }) f
 
 let%test _ =
-  let ast = parse "{ proc() { { ret 5 }.foo } }()" in
+  let ast = parse "{ proc() { { ret 5 }.foo } }()" "test.zt" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { { ret 5 }() } }()" in
+  let ast = parse "{ proc() { { ret 5 }() } }()" "test.zt" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { { ret 5 } + 1 } }()" in
+  let ast = parse "{ proc() { { ret 5 } + 1 } }()" "test.zt" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { 1 + { ret 5 } } }()" in
+  let ast = parse "{ proc() { 1 + { ret 5 } } }()" "test.zt" in
   Num 5 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "1()" in
+  let ast = parse "1()" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (InvalidCallee (Num 1, { row = 1; col = 1 })) f
+  assert_raises
+    (InvalidCallee (Num 1, { path = "test.zt"; row = 1; col = 1 }))
+    f
 
 let%test _ =
-  let ast = parse "{ proc() { mut i } }()" in
+  let ast = parse "{ proc() { mut i } }()" "test.zt" in
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { ret } }()" in
+  let ast = parse "{ proc() { ret } }()" "test.zt" in
   unit_val = exec_ast ast
 
 let%test_unit _ =
@@ -1127,9 +1181,10 @@ let%test_unit _ =
       }
     }()
   |}
+      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (Redeclaration ("i", { row = 5; col = 9 })) f
+  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 5; col = 9 })) f
 
 let%test_unit _ =
   let ast =
@@ -1142,14 +1197,17 @@ let%test_unit _ =
       }
     }()
   |}
+      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (Redeclaration ("i", { row = 5; col = 9 })) f
+  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 5; col = 9 })) f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { val i } }()" in
+  let ast = parse "{ proc() { val i } }()" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (UninitializedVal ("i", { row = 1; col = 12 })) f
+  assert_raises
+    (UninitializedVal ("i", { path = "test.zt"; row = 1; col = 12 }))
+    f
 
 let%test_unit _ =
   let ast =
@@ -1162,35 +1220,40 @@ let%test_unit _ =
       }
     }()
   |}
+      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (ImmutableAssign (Ident' "i", { row = 5; col = 9 })) f
+  assert_raises
+    (ImmutableAssign (Ident' "i", { path = "test.zt"; row = 5; col = 9 }))
+    f
 
 let%test_unit _ =
-  let ast = parse {|
+  let ast =
+    parse {|
     {
       proc() {
         i = 1
       }
     }()
-  |} in
+  |} "test.zt"
+  in
   let f () = exec_ast ast in
-  assert_raises (UnboundIdent ("i", { row = 4; col = 9 })) f
+  assert_raises (UnboundIdent ("i", { path = "test.zt"; row = 4; col = 9 })) f
 
 let%test_unit _ =
-  let ast = parse "{ brk }" in
+  let ast = parse "{ brk }" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { row = 1; col = 3 }) f
+  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 3 }) f
 
 let%test_unit _ =
-  let ast = parse "{ ctn }" in
+  let ast = parse "{ ctn }" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { row = 1; col = 3 }) f
+  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 3 }) f
 
 let%test_unit _ =
-  let ast = parse "{ ret }" in
+  let ast = parse "{ ret }" "test.zt" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { row = 1; col = 3 }) f
+  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 3 }) f
 
 let%test _ =
   let ast =
@@ -1204,6 +1267,7 @@ let%test _ =
       }
     }()
   |}
+      "test.zt"
   in
   Num 9 = exec_ast ast
 
@@ -1219,9 +1283,12 @@ let%test_unit _ =
       }
     }()
   |}
+      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (InvalidField ("bogus", { row = 5; col = 11 })) f
+  assert_raises
+    (InvalidField ("bogus", { path = "test.zt"; row = 5; col = 11 }))
+    f
 
 let%test_unit _ =
   let ast =
@@ -1235,6 +1302,9 @@ let%test_unit _ =
       }
     }()
   |}
+      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (InvalidAccess (Num 1, { row = 5; col = 9 })) f
+  assert_raises
+    (InvalidAccess (Num 1, { path = "test.zt"; row = 5; col = 9 }))
+    f
