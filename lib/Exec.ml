@@ -16,7 +16,7 @@ and prod = prod_field list
 and sum_variant = { type' : sum_type; disc : int; field : value option }
 
 (* TODO: add the rest of the variants and typecheck everything *)
-and type' = Num' | Rune' | Sum of sum_type
+and type' = Num' | Rune' | Sum of sum_type | Proc' of proc_type
 and sum_type = sum_variant_type list
 
 and sum_variant_type = {
@@ -24,6 +24,9 @@ and sum_variant_type = {
   disc' : int;
   field_type : type' option;
 }
+
+and prod_field_type = { kind : Parse.kind; name'' : string; type'' : type' }
+and proc_type = { arg_types : prod_field_type list; return_type : type' }
 
 let scope_entry_from_kind kind value =
   match kind with Parse.Mut -> Mut (ref (Some value)) | Val -> Val value
@@ -97,13 +100,7 @@ let rec args_names = function
   | [] -> []
   | {
       Parse.inner =
-        Parse.Decl'
-          {
-            kind';
-            name_or_count = { inner = Ident'' name; pos = _ };
-            type_'' = _;
-            value'' = _;
-          };
+        Parse.Decl' { kind'; name_or_count = { inner = Ident'' name; _ }; _ };
       pos;
     }
     :: fields ->
@@ -111,18 +108,7 @@ let rec args_names = function
         match kind' with Some Parse.Mut -> raise (MutArgument pos) | _ -> ()
       in
       name :: args_names fields
-  | {
-      inner =
-        Decl'
-          {
-            kind' = _;
-            name_or_count = { inner = Num'' _; pos };
-            type_'' = _;
-            value'' = _;
-          };
-      pos = _;
-    }
-    :: _ ->
+  | { inner = Decl' { name_or_count = { inner = Num'' _; pos }; _ }; _ } :: _ ->
       raise (NumAsArgumentName pos)
   | { inner = Value' _; pos } :: _ -> raise (ValueAsArgument pos)
 
@@ -231,10 +217,19 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
               | None -> None unit_val)
           | cond -> raise (InvalidIfCond (cond, pos)))
         ctrl
-  | ProcType { args = _; return_type = _ } -> raise TODO
-  | Proc
-      { type_' = { args = { inner = args; pos = _ }; return_type = _ }; body }
-    ->
+  | ProcType { args = { inner = args; _ }; return_type = Some return_type } ->
+      let ctrl_of_arg_types = exec_arg_types args scopes in
+      map_ctrl_of
+        (fun arg_types ->
+          let return_type_ctrl = exec_expr return_type scopes in
+          map_ctrl_of
+            (fun return_type_val ->
+              let return_type = expect_type return_type_val return_type.pos in
+              None (Type (Proc' { arg_types; return_type })))
+            return_type_ctrl)
+        ctrl_of_arg_types
+  | ProcType { return_type = None; _ } -> raise TODO
+  | Proc { type_' = { args = { inner = args; _ }; _ }; body } ->
       let expected = args_names args in
       None
         (Proc
@@ -400,6 +395,47 @@ and exec_prod fields scopes =
   in
   ctrl
 
+and exec_arg_types args scopes =
+  let _, ctrl =
+    List.fold_left
+      (fun (prev_kind, ctrl) { Parse.inner = arg; pos } ->
+        match ctrl with
+        | None args -> (
+            match arg with
+            | Parse.Decl'
+                {
+                  kind';
+                  name_or_count = { inner = Ident'' name''; _ };
+                  type_'' = Some type_;
+                  value'' = None;
+                } -> (
+                let kind = Option.value kind' ~default:prev_kind in
+                let ctrl = exec_expr type_ scopes in
+                let () =
+                  match
+                    List.find_opt
+                      (fun { name'' = existing_name; _ } ->
+                        existing_name = name'')
+                      args
+                  with
+                  | Some { name''; _ } -> raise (Redeclaration (name'', pos))
+                  | None -> ()
+                in
+                match ctrl with
+                | None type_val ->
+                    let type'' = expect_type type_val type_.pos in
+                    (kind, None (args @ [ { kind; name''; type'' } ]))
+                | Brk pos -> (kind, Brk pos)
+                | Ctn pos -> (kind, Ctn pos)
+                | Ret (value, pos) -> (kind, Ret (value, pos)))
+            | _ -> raise TODO)
+        | Brk pos -> (prev_kind, Brk pos)
+        | Ctn pos -> (prev_kind, Ctn pos)
+        | Ret (value, pos) -> (prev_kind, Ret (value, pos)))
+      (Parse.Val, None []) args
+  in
+  ctrl
+
 and exec_block stmts scopes =
   match stmts with
   | [ { inner = Expr expr; pos } ] ->
@@ -429,13 +465,8 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
           let ctrl = exec_expr value scopes in
           map_ctrl_of (fun value -> Ret (Some value, pos)) ctrl
       | None -> Ret (None, pos))
-  | Decl
-      {
-        kind = { inner = kind; pos = _ };
-        name = { inner = name; pos = _ };
-        type_ = _;
-        value;
-      } -> (
+  | Decl { kind = { inner = kind; _ }; name = { inner = name; _ }; value; _ }
+    -> (
       match (kind, value) with
       | _, Some value ->
           let ctrl = exec_expr value scopes in
@@ -585,7 +616,29 @@ let intrinsics =
                              let variants_string =
                                String.concat "\n  " variant_strings
                              in
-                             "[\n  " ^ variants_string ^ "\n]")
+                             "[\n  " ^ variants_string ^ "\n]"
+                         | Proc' { arg_types; return_type } ->
+                             let arg_type_strings =
+                               List.map
+                                 (fun { kind; name''; type'' } ->
+                                   let kind_string =
+                                     match kind with
+                                     | Parse.Mut -> "mut"
+                                     | Val -> "val"
+                                   in
+                                   let type_string = stringify (Type type'') in
+                                   kind_string ^ " " ^ name'' ^ ": "
+                                   ^ type_string ^ ",")
+                                 arg_types
+                             in
+                             let arg_types_string =
+                               String.concat "\n  " arg_type_strings
+                             in
+                             let return_type_string =
+                               stringify (Type return_type)
+                             in
+                             "proc(\n  " ^ arg_types_string ^ "\n): "
+                             ^ return_type_string)
                    in
                    let () = stringify value |> print_endline in
                    unit_val
@@ -941,23 +994,21 @@ let%test _ =
   | Type
       (Sum
         [
-          { name' = "Red"; disc' = _; field_type = None };
-          { name' = "Green"; disc' = _; field_type = Some Num' };
-          { name' = "Blue"; disc' = _; field_type = Some Rune' };
+          { name' = "Red"; field_type = None; _ };
+          { name' = "Green"; field_type = Some Num'; _ };
+          { name' = "Blue"; field_type = Some Rune'; _ };
         ]) ->
       true
   | _ -> false
 
 let%test _ =
   let ast = parse "[Red].Red" "test.zt" in
-  match exec_ast ast with
-  | SumVariant { type' = _; disc = _; field = None } -> true
-  | _ -> false
+  match exec_ast ast with SumVariant { field = None; _ } -> true | _ -> false
 
 let%test _ =
   let ast = parse "[Green(Num)].Green(value = 5)" "test.zt" in
   match exec_ast ast with
-  | SumVariant { type' = _; disc = _; field = Some (Num 5) } -> true
+  | SumVariant { field = Some (Num 5); _ } -> true
   | _ -> false
 
 let%test_unit _ =
@@ -1374,3 +1425,36 @@ let%test_unit _ =
   assert_raises
     (InvalidAccess (Num 1, { path = "test.zt"; row = 5; col = 9 }))
     f
+
+let%test _ =
+  let ast = parse "proc(): Num" "test.zt" in
+  Type (Proc' { arg_types = []; return_type = Num' }) = exec_ast ast
+
+let%test _ =
+  let ast = parse "proc(foo: Num): Num" "test.zt" in
+  Type
+    (Proc'
+       {
+         arg_types = [ { kind = Parse.Val; name'' = "foo"; type'' = Num' } ];
+         return_type = Num';
+       })
+  = exec_ast ast
+
+let%test _ =
+  let ast = parse "proc(mut foo: Num, baz: Rune): Num" "test.zt" in
+  Type
+    (Proc'
+       {
+         arg_types =
+           [
+             { kind = Parse.Mut; name'' = "foo"; type'' = Num' };
+             { kind = Mut; name'' = "baz"; type'' = Rune' };
+           ];
+         return_type = Num';
+       })
+  = exec_ast ast
+
+let%test_unit _ =
+  let ast = parse "proc(i: Num, i: Num): Num" "test.zt" in
+  let f () = exec_ast ast in
+  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 1; col = 14 })) f
