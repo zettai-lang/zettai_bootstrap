@@ -516,7 +516,78 @@ let intrinsics =
                match fields with
                | [ { name = "value"; entry } ] ->
                    let value = value_from_scope_entry "value" pos entry in
-                   let () = show_value value |> print_endline in
+                   let indent text =
+                     String.split_on_char '\n' text |> String.concat "\n  "
+                   in
+                   let rec stringify value =
+                     match value with
+                     | Num n -> string_of_int n
+                     | Rune r -> "'" ^ Char.escaped r ^ "'"
+                     | SumVariant { type'; disc; field } ->
+                         let name =
+                           match
+                             List.find_opt
+                               (fun { disc'; _ } -> disc' = disc)
+                               type'
+                           with
+                           | None -> raise Unreachable
+                           | Some { name'; _ } -> name'
+                         in
+                         let field_string =
+                           Option.map
+                             (fun field ->
+                               "(" ^ (stringify field |> indent) ^ ")")
+                             field
+                         in
+                         name ^ Option.value field_string ~default:""
+                     | Prod fields ->
+                         let field_strings =
+                           List.map
+                             (fun { name; entry } ->
+                               let entry_string =
+                                 match entry with
+                                 | Mut value_ref -> (
+                                     match !value_ref with
+                                     | Some value -> stringify value |> indent
+                                     | None -> "(uninitialized)")
+                                 | Val value -> stringify value |> indent
+                               in
+                               name ^ " = " ^ entry_string ^ ",")
+                             fields
+                         in
+                         let fields_string =
+                           String.concat "\n  " field_strings
+                         in
+                         "(\n  " ^ fields_string ^ "\n)"
+                     | Proc _ -> "proc(...) { ... }"
+                     | Type t -> (
+                         match t with
+                         | Num' -> "Num"
+                         | Rune' -> "Rune"
+                         | Sum variants ->
+                             let variant_strings =
+                               List.map
+                                 (fun { name'; field_type; _ } ->
+                                   let field_type_string =
+                                     Option.map
+                                       (fun field_type ->
+                                         "("
+                                         ^ (stringify (Type field_type)
+                                           |> indent)
+                                         ^ ")")
+                                       field_type
+                                   in
+                                   name'
+                                   ^ Option.value field_type_string ~default:""
+                                   ^ ",")
+                                 variants
+                             in
+                             let variants_string =
+                               String.concat "\n  " variant_strings
+                             in
+                             "[\n  " ^ variants_string ^ "\n]")
+                   in
+                   let () = stringify value |> print_endline in
                    unit_val
                | _ -> raise (InvalidCallArgs ([ "value" ], fields, pos))));
     };
