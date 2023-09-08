@@ -529,15 +529,12 @@ let rec fix_expr_prec { inner = expr; pos } =
       | Some (make, lhs, rhs, prec) ->
           let lhs = fix_expr_prec lhs in
           let rhs = fix_expr_prec rhs in
-          let make, lhs, rhs, prec =
-            match binary_prec lhs with
-            | Some (make_inner, lhs_inner, rhs_inner, prec_inner) ->
-                if prec > prec_inner then
-                  let rhs = make rhs_inner rhs |> fix_expr_prec in
-                  (make_inner, lhs_inner, rhs, prec_inner)
-                else (make, lhs, rhs, prec)
-            | None -> (make, lhs, rhs, prec)
-          in
+          (*
+            We also don't have to check the case where the lhs is a binop here
+            because it can't have lower precedence since binops are parsed
+            left-to-right originally, so it wouldn't have been nested in here in
+            the first place.
+          *)
           let make, lhs, rhs, _ =
             match binary_prec rhs with
             | Some (make_inner, lhs_inner, rhs_inner, prec_inner) ->
