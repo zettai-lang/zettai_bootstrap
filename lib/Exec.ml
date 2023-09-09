@@ -537,6 +537,263 @@ and exec_loop body scopes =
   | Ret (value, pos) -> Ret (value, pos)
   | _ -> exec_loop body scopes
 
+let rec stringify value =
+  let indent text = String.split_on_char '\n' text |> String.concat "\n  " in
+  match value with
+  | Num n -> string_of_int n
+  | Rune r -> "'" ^ Char.escaped r ^ "'"
+  | SumVariant { type'; disc; field } ->
+      let name =
+        match List.find_opt (fun { disc'; _ } -> disc' = disc) type' with
+        | None -> raise Unreachable
+        | Some { name'; _ } -> name'
+      in
+      let field_string =
+        Option.map (fun field -> "(" ^ (stringify field |> indent) ^ ")") field
+      in
+      name ^ Option.value field_string ~default:""
+  | Prod [] -> "()"
+  | Prod fields ->
+      let field_strings =
+        List.map
+          (fun { name; entry } ->
+            let entry_string =
+              match entry with
+              | Mut value_ref -> (
+                  match !value_ref with
+                  | Some value -> stringify value |> indent
+                  | None -> "(uninitialized)")
+              | Val value -> stringify value |> indent
+            in
+            name ^ " = " ^ entry_string ^ ",")
+          fields
+      in
+      let fields_string = String.concat "\n  " field_strings in
+      "(\n  " ^ fields_string ^ "\n)"
+  | Proc _ -> "proc(...) { ... }"
+  | Type t -> (
+      match t with
+      | Num' -> "Num"
+      | Rune' -> "Rune"
+      | Sum [] -> "[]"
+      | Sum variants ->
+          let variant_strings =
+            List.map
+              (fun { name'; field_type; _ } ->
+                let field_type_string =
+                  Option.map
+                    (fun field_type ->
+                      "(" ^ (stringify (Type field_type) |> indent) ^ ")")
+                    field_type
+                in
+                name' ^ Option.value field_type_string ~default:"" ^ ",")
+              variants
+          in
+          let variants_string = String.concat "\n  " variant_strings in
+          "[\n  " ^ variants_string ^ "\n]"
+      | Proc' { arg_types; return_type } ->
+          let arg_types_string =
+            match arg_types with
+            | [] -> "()"
+            | _ ->
+                let arg_type_strings =
+                  List.map
+                    (fun { kind; name''; type'' } ->
+                      let kind_string =
+                        match kind with Parse.Mut -> "mut" | Val -> "val"
+                      in
+                      let type_string = stringify (Type type'') in
+                      kind_string ^ " " ^ name'' ^ ": " ^ type_string ^ ",")
+                    arg_types
+                in
+                "(\n  " ^ String.concat "\n  " arg_type_strings ^ "\n)"
+          in
+          let return_type_string = stringify (Type return_type) in
+          "proc" ^ arg_types_string ^ ": " ^ return_type_string)
+
+let%expect_test _ =
+  stringify (Num 5) |> print_endline;
+  [%expect "5"]
+
+let%expect_test _ =
+  stringify (Rune 'a') |> print_endline;
+  [%expect "'a'"]
+
+let%expect_test _ =
+  stringify (Rune '\r') |> print_endline;
+  [%expect "'\\r'"]
+
+let%expect_test _ =
+  stringify (SumVariant { type' = bool_type; disc = 1; field = None })
+  |> print_endline;
+  [%expect "True"]
+
+let%expect_test _ =
+  stringify
+    (SumVariant
+       {
+         type' =
+           [
+             { name' = "Bar"; disc' = 0; field_type = None };
+             { name' = "Baz"; disc' = 9; field_type = Some Rune' };
+           ];
+         disc = 9;
+         field = Some (Rune '\n');
+       })
+  |> print_endline;
+  [%expect "Baz('\\n')"]
+
+let%expect_test _ =
+  stringify (Prod []) |> print_endline;
+  [%expect "()"]
+
+let%expect_test _ =
+  stringify (Prod [ { name = "foo"; entry = Val (Num 9) } ]) |> print_endline;
+  [%expect {|
+(
+  foo = 9,
+)
+|}]
+
+let%expect_test _ =
+  stringify
+    (Prod
+       [
+         { name = "foo"; entry = Val (Num 9) };
+         { name = "bar"; entry = Mut (ref (Some (Rune 'r'))) };
+         { name = "baz"; entry = Mut (ref Option.None) };
+       ])
+  |> print_endline;
+  [%expect {|
+(
+  foo = 9,
+  bar = 'r',
+  baz = (uninitialized),
+)
+|}]
+
+let%expect_test _ =
+  stringify
+    (Prod
+       [
+         {
+           name = "foo";
+           entry =
+             Val
+               (Prod
+                  [
+                    {
+                      name = "bar";
+                      entry =
+                        Val (Prod [ { name = "baz"; entry = Val (Prod []) } ]);
+                    };
+                  ]);
+         };
+       ])
+  |> print_endline;
+  [%expect {|
+(
+  foo = (
+    bar = (
+      baz = (),
+    ),
+  ),
+)
+|}]
+
+let%expect_test _ =
+  stringify (Proc (fun _ _ -> unit_val)) |> print_endline;
+  [%expect "proc(...) { ... }"]
+
+let%expect_test _ =
+  stringify (Type Num') |> print_endline;
+  [%expect "Num"]
+
+let%expect_test _ =
+  stringify (Type Rune') |> print_endline;
+  [%expect "Rune"]
+
+let%expect_test _ =
+  stringify (Type (Sum [])) |> print_endline;
+  [%expect "[]"]
+
+let%expect_test _ =
+  stringify (Type (Sum [ { name' = "Foo"; disc' = 0; field_type = None } ]))
+  |> print_endline;
+  [%expect {|
+[
+  Foo,
+]
+|}]
+
+let%expect_test _ =
+  stringify
+    (Type (Sum [ { name' = "Foo"; disc' = 0; field_type = Some Rune' } ]))
+  |> print_endline;
+  [%expect {|
+[
+  Foo(Rune),
+]
+|}]
+
+let%expect_test _ =
+  stringify
+    (Type
+       (Sum
+          [
+            { name' = "Foo"; disc' = 0; field_type = Some Rune' };
+            { name' = "Bar"; disc' = 1; field_type = None };
+            { name' = "Baz"; disc' = 2; field_type = Some Num' };
+          ]))
+  |> print_endline;
+  [%expect {|
+[
+  Foo(Rune),
+  Bar,
+  Baz(Num),
+]
+|}]
+
+let%expect_test _ =
+  stringify (Type (Proc' { arg_types = []; return_type = Rune' }))
+  |> print_endline;
+  [%expect "proc(): Rune"]
+
+let%expect_test _ =
+  stringify
+    (Type
+       (Proc'
+          {
+            arg_types = [ { kind = Parse.Val; name'' = "foo"; type'' = Num' } ];
+            return_type = Sum [];
+          }))
+  |> print_endline;
+  [%expect {|
+  proc(
+    val foo: Num,
+  ): []
+|}]
+
+let%expect_test _ =
+  stringify
+    (Type
+       (Proc'
+          {
+            arg_types =
+              [
+                { kind = Parse.Val; name'' = "foo"; type'' = Num' };
+                { kind = Mut; name'' = "bar"; type'' = Rune' };
+              ];
+            return_type = Sum [];
+          }))
+  |> print_endline;
+  [%expect {|
+  proc(
+    val foo: Num,
+    mut bar: Rune,
+  ): []
+|}]
+
 let intrinsics =
   [
     {
@@ -548,99 +805,6 @@ let intrinsics =
                match fields with
                | [ { name = "value"; entry } ] ->
                    let value = value_from_scope_entry "value" pos entry in
-                   let indent text =
-                     String.split_on_char '\n' text |> String.concat "\n  "
-                   in
-                   let rec stringify value =
-                     match value with
-                     | Num n -> string_of_int n
-                     | Rune r -> "'" ^ Char.escaped r ^ "'"
-                     | SumVariant { type'; disc; field } ->
-                         let name =
-                           match
-                             List.find_opt
-                               (fun { disc'; _ } -> disc' = disc)
-                               type'
-                           with
-                           | None -> raise Unreachable
-                           | Some { name'; _ } -> name'
-                         in
-                         let field_string =
-                           Option.map
-                             (fun field ->
-                               "(" ^ (stringify field |> indent) ^ ")")
-                             field
-                         in
-                         name ^ Option.value field_string ~default:""
-                     | Prod fields ->
-                         let field_strings =
-                           List.map
-                             (fun { name; entry } ->
-                               let entry_string =
-                                 match entry with
-                                 | Mut value_ref -> (
-                                     match !value_ref with
-                                     | Some value -> stringify value |> indent
-                                     | None -> "(uninitialized)")
-                                 | Val value -> stringify value |> indent
-                               in
-                               name ^ " = " ^ entry_string ^ ",")
-                             fields
-                         in
-                         let fields_string =
-                           String.concat "\n  " field_strings
-                         in
-                         "(\n  " ^ fields_string ^ "\n)"
-                     | Proc _ -> "proc(...) { ... }"
-                     | Type t -> (
-                         match t with
-                         | Num' -> "Num"
-                         | Rune' -> "Rune"
-                         | Sum variants ->
-                             let variant_strings =
-                               List.map
-                                 (fun { name'; field_type; _ } ->
-                                   let field_type_string =
-                                     Option.map
-                                       (fun field_type ->
-                                         "("
-                                         ^ (stringify (Type field_type)
-                                           |> indent)
-                                         ^ ")")
-                                       field_type
-                                   in
-                                   name'
-                                   ^ Option.value field_type_string ~default:""
-                                   ^ ",")
-                                 variants
-                             in
-                             let variants_string =
-                               String.concat "\n  " variant_strings
-                             in
-                             "[\n  " ^ variants_string ^ "\n]"
-                         | Proc' { arg_types; return_type } ->
-                             let arg_type_strings =
-                               List.map
-                                 (fun { kind; name''; type'' } ->
-                                   let kind_string =
-                                     match kind with
-                                     | Parse.Mut -> "mut"
-                                     | Val -> "val"
-                                   in
-                                   let type_string = stringify (Type type'') in
-                                   kind_string ^ " " ^ name'' ^ ": "
-                                   ^ type_string ^ ",")
-                                 arg_types
-                             in
-                             let arg_types_string =
-                               String.concat "\n  " arg_type_strings
-                             in
-                             let return_type_string =
-                               stringify (Type return_type)
-                             in
-                             "proc(\n  " ^ arg_types_string ^ "\n): "
-                             ^ return_type_string)
-                   in
                    let () = stringify value |> print_endline in
                    unit_val
                | _ -> raise (InvalidCallArgs ([ "value" ], fields, pos))));
