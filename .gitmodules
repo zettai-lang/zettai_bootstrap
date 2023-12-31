@@ -1,0 +1,3 @@
+[submodule "functest"]
+	path = functest
+	url = git@github.com:zettai-lang/zettai-functest
