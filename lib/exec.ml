@@ -11,7 +11,7 @@ type value =
   | Type of type'
 
 and scope_entry = Mut of value option ref | Val of value
-and prod_field = { name : string; entry : scope_entry }
+and prod_field = { name : string option; entry : scope_entry }
 and prod = prod_field list
 and sum_variant = { type' : sum_type; disc : int; field : value option }
 
@@ -208,7 +208,9 @@ let rec exec_expr expr scopes =
             (function
               | Prod fields -> (
                   match
-                    List.find_opt (fun { name; _ } -> name = accessor) fields
+                    List.find_opt
+                      (fun { name; _ } -> name = Some accessor)
+                      fields
                   with
                   | Some { entry; _ } ->
                       None (value_from_scope_entry accessor entry)
@@ -226,7 +228,7 @@ let rec exec_expr expr scopes =
                         (Proc
                            (fun fields ->
                              match fields with
-                             | [ { name = "value"; entry } ] ->
+                             | [ { name = None | Some "value"; entry } ] ->
                                  let value =
                                    value_from_scope_entry "value" entry
                                  in
@@ -258,34 +260,28 @@ let rec exec_expr expr scopes =
       None
         (Proc
            (fun fields ->
-             if
-               List.length fields != List.length expected
-               || not
-                    (List.for_all2
-                       (fun expected_name actual_field ->
-                         expected_name = actual_field.name
-                         &&
-                         match
-                           (List.find
-                              (fun { name; _ } -> name = expected_name)
-                              fields)
-                             .entry
-                         with
-                         | Mut _ -> false
-                         | Val _ -> true)
-                       expected fields)
-             then raise (InvalidCallArgs (expected, fields))
-             else
-               let fields_scope =
-                 List.fold_left
-                   (fun scope { name; entry } -> StringMap.add name entry scope)
-                   StringMap.empty fields
-               in
-               let ctrl = exec_block body (ref fields_scope :: scopes) in
-               match ctrl with
-               | None value -> value
-               | Brk | Ctn -> raise UnexpectedCtrl
-               | Ret value -> Option.value value ~default:unit_val))
+             let field_pairs =
+               try List.combine expected fields
+               with Invalid_argument _ ->
+                 raise (InvalidCallArgs (expected, fields))
+             in
+             let fields_scope =
+               List.fold_left
+                 (fun scope (expected_name, { name; entry; _ }) ->
+                   let () =
+                     match name with
+                     | Some name when name <> expected_name ->
+                         raise (InvalidCallArgs (expected, fields))
+                     | _ -> ()
+                   in
+                   StringMap.add expected_name entry scope)
+                 StringMap.empty field_pairs
+             in
+             let ctrl = exec_block body (ref fields_scope :: scopes) in
+             match ctrl with
+             | None value -> value
+             | Brk | Ctn -> raise UnexpectedCtrl
+             | Ret value -> Option.value value ~default:unit_val))
   | ProcT { args; return_type = Some return_type } ->
       let ctrl_of_arg_types = exec_arg_types args scopes in
       map_ctrl_of
@@ -328,8 +324,8 @@ and exec_bool_binop scopes binop op =
   exec_binop scopes binop (fun lhs rhs ->
       match (lhs, rhs) with
       | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
-          let d1 = v1.disc != 0 in
-          let d2 = v2.disc != 0 in
+          let d1 = v1.disc <> 0 in
+          let d2 = v2.disc <> 0 in
           bool_from_bool (op d1 d2)
       | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
 
@@ -372,19 +368,30 @@ and exec_prod fields scopes =
                 let () =
                   match
                     List.find_opt
-                      (fun { name = existing_name; _ } -> existing_name = name)
-                      fields
+                      (fun existing_name -> existing_name = name)
+                      (List.filter_map (fun { name; _ } -> name) fields)
                   with
-                  | Some { name; _ } -> raise (Redeclaration name)
+                  | Some name -> raise (Redeclaration name)
                   | None -> ()
                 in
                 match ctrl with
                 | None value ->
+                    let name = Some name in
                     let entry = scope_entry_from_kind kind value in
                     (kind, None (fields @ [ { name; entry } ]))
                 | Brk -> (kind, Brk)
                 | Ctn -> (kind, Ctn)
                 | Ret value -> (kind, Ret value))
+            | Value value -> (
+                let ctrl = exec_expr value scopes in
+                match ctrl with
+                | None value ->
+                    let name = Option.None in
+                    let entry = scope_entry_from_kind prev_kind value in
+                    (prev_kind, None (fields @ [ { name; entry } ]))
+                | Brk -> (prev_kind, Brk)
+                | Ctn -> (prev_kind, Ctn)
+                | Ret value -> (prev_kind, Ret value))
             | _ -> raise TODO)
         | Brk -> (prev_kind, Brk)
         | Ctn -> (prev_kind, Ctn)
@@ -513,7 +520,9 @@ and exec_stmt stmt scopes =
             (function
               | Prod fields -> (
                   match
-                    List.find_opt (fun { name; _ } -> name = accessor) fields
+                    List.find_opt
+                      (fun { name; _ } -> name = Some accessor)
+                      fields
                   with
                   | Some { entry; _ } ->
                       try_scope_entry_assign accessor entry scopes
@@ -555,8 +564,9 @@ let rec stringify value =
   | Prod [] -> "()"
   | Prod fields ->
       let field_strings =
-        List.map
-          (fun { name; entry } ->
+        List.mapi
+          (fun i { name; entry } ->
+            let name_string = Option.value name ~default:(string_of_int i) in
             let entry_string =
               match entry with
               | Mut value_ref -> (
@@ -565,7 +575,7 @@ let rec stringify value =
                   | None -> "(uninitialized)")
               | Val value -> stringify value |> indent
             in
-            name ^ " = " ^ entry_string ^ ",")
+            name_string ^ " = " ^ entry_string ^ ",")
           fields
       in
       let fields_string = String.concat "\n  " field_strings in
@@ -662,7 +672,8 @@ let%expect_test _ =
   [%expect "()"]
 
 let%expect_test _ =
-  stringify (Prod [ { name = "foo"; entry = Val (Num 9) } ]) |> print_endline;
+  stringify (Prod [ { name = Some "foo"; entry = Val (Num 9) } ])
+  |> print_endline;
   [%expect {|
 (
   foo = 9,
@@ -673,9 +684,9 @@ let%expect_test _ =
   stringify
     (Prod
        [
-         { name = "foo"; entry = Val (Num 9) };
-         { name = "bar"; entry = Mut (ref (Some (Rune 'r'))) };
-         { name = "baz"; entry = Mut (ref Option.None) };
+         { name = Some "foo"; entry = Val (Num 9) };
+         { name = Some "bar"; entry = Mut (ref (Some (Rune 'r'))) };
+         { name = Some "baz"; entry = Mut (ref Option.None) };
        ])
   |> print_endline;
   [%expect {|
@@ -691,15 +702,16 @@ let%expect_test _ =
     (Prod
        [
          {
-           name = "foo";
+           name = Some "foo";
            entry =
              Val
                (Prod
                   [
                     {
-                      name = "bar";
+                      name = Some "bar";
                       entry =
-                        Val (Prod [ { name = "baz"; entry = Val (Prod []) } ]);
+                        Val
+                          (Prod [ { name = Some "baz"; entry = Val (Prod []) } ]);
                     };
                   ]);
          };
@@ -810,13 +822,13 @@ let%expect_test _ =
 let intrinsics =
   [
     {
-      name = "bsPrintln";
+      name = Some "bsPrintln";
       entry =
         Val
           (Proc
              (fun fields ->
                match fields with
-               | [ { name = "value"; entry } ] ->
+               | [ { name = None | Some "value"; entry } ] ->
                    let value = value_from_scope_entry "value" entry in
                    let () = stringify value |> print_endline in
                    unit_val
@@ -1078,7 +1090,7 @@ let%test _ =
 
 let%test _ =
   let ast = parse "(val i = 9)" in
-  Prod [ { name = "i"; entry = Val (Num 9) } ] = exec_ast ast
+  Prod [ { name = Some "i"; entry = Val (Num 9) } ] = exec_ast ast
 
 let%test_unit _ =
   let ast = parse "(val i = 9, val i = 9)" in
@@ -1089,9 +1101,9 @@ let%test _ =
   let ast = parse "(val i = 9, val j = 'a', mut k = true)" in
   Prod
     [
-      { name = "i"; entry = Val (Num 9) };
-      { name = "j"; entry = Val (Rune 'a') };
-      { name = "k"; entry = Mut (ref (Some (bool_from_bool true))) };
+      { name = Some "i"; entry = Val (Num 9) };
+      { name = Some "j"; entry = Val (Rune 'a') };
+      { name = Some "k"; entry = Mut (ref (Some (bool_from_bool true))) };
     ]
   = exec_ast ast
 
@@ -1152,7 +1164,8 @@ let%test_unit _ =
   let ast = parse "[Green(num)].Green(foo = 5)" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidCallArgs ([ "value" ], [ { name = "foo"; entry = Val (Num 5) } ]))
+    (InvalidCallArgs
+       ([ "value" ], [ { name = Some "foo"; entry = Val (Num 5) } ]))
     f
 
 let%test_unit _ =
@@ -1231,7 +1244,7 @@ let%test _ =
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc(val i: Nat) { i + 1 } }(val i = 2)" in
+  let ast = parse "{ proc(val i: Nat) { i + 1 } }(2)" in
   Num 3 = exec_ast ast
 
 let%test _ =
@@ -1248,7 +1261,7 @@ let%test_unit _ =
   let ast = parse "{ proc(val i: Nat) { i } }(val j = 2)" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidCallArgs ([ "i" ], [ { name = "j"; entry = Val (Num 2) } ]))
+    (InvalidCallArgs ([ "i" ], [ { name = Some "j"; entry = Val (Num 2) } ]))
     f
 
 let%test_unit _ =
