@@ -1,7 +1,12 @@
+(env
+ (dev
+  (flags
+   (:standard -w -30 -warn-error -26-32))))
+
 (library
  (name zettai_bootstrap)
  (public_name zettai_bootstrap)
- (libraries core ounit2)
+ (libraries angstrom core ounit2)
  (instrumentation
   (backend bisect_ppx))
  (inline_tests)

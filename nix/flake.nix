@@ -16,9 +16,14 @@
         duneVersion = "3";
 
         checkInputs = buildInputs ++ [ final.ocamlPackages.ppx_inline_test ];
-        buildInputs = with final.ocamlPackages; [ core ounit2 ppx_deriving ];
+        buildInputs = with final.ocamlPackages; [
+          angstrom
+          core
+          ounit2
+          ppx_deriving
+        ];
 
-        src = builtins.path { path = ./.; name = "zettai_bootstrap-src"; };
+        src = builtins.path { path = ./..; name = "zettai_bootstrap-src"; };
       };
     };
   } // utils.lib.eachDefaultSystem (system:
@@ -28,14 +33,15 @@
         inherit system;
       };
       inherit (pkgs) zettai_bootstrap mkShell ocamlformat ocamlPackages;
-      inherit (ocamlPackages) bisect_ppx core dune_3 findlib ocaml ocaml-lsp
-        ounit2 ppx_assert ppx_deriving ppx_inline_test;
+      inherit (ocamlPackages) angstrom bisect_ppx core dune_3 findlib ocaml
+        ocaml-lsp ounit2 ppx_assert ppx_deriving ppx_inline_test;
     in
     {
       packages.default = zettai_bootstrap;
 
       devShells.default = mkShell {
         packages = [
+          angstrom
           bisect_ppx
           core
           dune_3

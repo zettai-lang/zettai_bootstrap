@@ -7,7 +7,7 @@ type value =
   | Rune of char
   | SumVariant of sum_variant
   | Prod of prod
-  | Proc of (prod -> Lex.pos -> value)
+  | Proc of (prod -> value)
   | Type of type'
 
 and scope_entry = Mut of value option ref | Val of value
@@ -31,107 +31,89 @@ and proc_type = { arg_types : prod_field_type list; return_type : type' }
 let scope_entry_from_kind kind value =
   match kind with Parse.Mut -> Mut (ref (Some value)) | Val -> Val value
 
-exception UseBeforeInitialization of string * Lex.pos
+exception UseBeforeInitialization of string
 
 let () =
   Printexc.register_printer (function
-    | UseBeforeInitialization (name, { path; row; col }) ->
-        Some
-          (Printf.sprintf "%s:%d:%d: use of \"%s\" before initialization" path
-             row col name)
+    | UseBeforeInitialization name ->
+        Some (Printf.sprintf "use of \"%s\" before initialization" name)
     | _ -> None)
 
-let value_from_scope_entry name pos = function
+let value_from_scope_entry name = function
   | Mut value_ref -> (
       match !value_ref with
       | Some value -> value
-      | None -> raise (UseBeforeInitialization (name, pos)))
+      | None -> raise (UseBeforeInitialization name))
   | Val value -> value
 
 (* TODO: replace this with a general typecheck error *)
-exception ValueAsType of value * Lex.pos
+exception ValueAsType of value
 
-let expect_type value pos =
-  match value with Type t -> t | _ -> raise (ValueAsType (value, pos))
+let expect_type value =
+  match value with Type t -> t | _ -> raise (ValueAsType value)
 
 let unit_val = Prod []
 
-type 'a ctrl_of =
-  | Brk of Lex.pos
-  | Ctn of Lex.pos
-  | Ret of value option * Lex.pos
-  | None of 'a
+type 'a ctrl_of = Brk | Ctn | Ret of value option | None of 'a
 
 let map_ctrl_of f = function
-  | Brk pos -> Brk pos
-  | Ctn pos -> Ctn pos
-  | Ret (value, pos) -> Ret (value, pos)
+  | Brk -> Brk
+  | Ctn -> Ctn
+  | Ret value -> Ret value
   | None a -> f a
 
-exception NumAsArgumentName of Lex.pos
+exception NumAsArgumentName
 
 let () =
   Printexc.register_printer (function
-    | NumAsArgumentName { path; row; col } ->
-        Some
-          (Printf.sprintf "%s:%d:%d: number specified as argument name" path row
-             col)
+    | NumAsArgumentName ->
+        Some (Printf.sprintf "number specified as argument name")
     | _ -> None)
 
-exception ValueAsArgument of Lex.pos
+exception ValueAsArgument
 
 let () =
   Printexc.register_printer (function
-    | ValueAsArgument { path; row; col } ->
-        Some
-          (Printf.sprintf "%s:%d:%d: value specified in function declaration"
-             path row col)
+    | ValueAsArgument ->
+        Some (Printf.sprintf "value specified in function declaration")
     | _ -> None)
 
-exception MutArgument of Lex.pos
+exception MutArgument
 
 let () =
   Printexc.register_printer (function
-    | MutArgument { path; row; col } ->
-        Some (Printf.sprintf "%s:%d:%d: argument specified as mut" path row col)
+    | MutArgument -> Some (Printf.sprintf "argument specified as mut")
     | _ -> None)
 
-let rec args_names = function
+let rec args_names : Parse.prod_field list -> _ = function
   | [] -> []
-  | {
-      Parse.inner =
-        Parse.Decl' { kind'; name_or_count = { inner = Ident'' name; _ }; _ };
-      pos;
-    }
-    :: fields ->
+  | Parse.Decl { kind; name_or_count = Name name; _ } :: fields ->
       let () =
-        match kind' with Some Parse.Mut -> raise (MutArgument pos) | _ -> ()
+        match kind with Some Parse.Mut -> raise MutArgument | _ -> ()
       in
       name :: args_names fields
-  | { inner = Decl' { name_or_count = { inner = Num'' _; pos }; _ }; _ } :: _ ->
-      raise (NumAsArgumentName pos)
-  | { inner = Value' _; pos } :: _ -> raise (ValueAsArgument pos)
+  | Decl { name_or_count = Count _; _ } :: _ -> raise NumAsArgumentName
+  | Value _ :: _ -> raise ValueAsArgument
 
-exception InvalidBinopOperands of value * value * Lex.pos
-exception InvalidUnaryOperand of value * Lex.pos
-exception InvalidIfCond of value * Lex.pos
-exception UninitializedVal of string * Lex.pos
-exception UnboundIdent of string * Lex.pos
+exception InvalidBinopOperands of value * value
+exception InvalidUnaryOperand of value
+exception InvalidIfCond of value
+exception UninitializedVal of string
+exception UnboundIdent of string
 
 let () =
   Printexc.register_printer (function
-    | UnboundIdent (name, { path; row; col }) ->
-        Some
-          (Printf.sprintf "%s:%d:%d: unbound ident: \"%s\"" path row col name)
+    | UnboundIdent name -> Some (Printf.sprintf "unbound ident: \"%s\"" name)
     | _ -> None)
 
-exception Redeclaration of string * Lex.pos
-exception ImmutableAssign of Parse.ident_or_field * Lex.pos
-exception InvalidAccess of value * Lex.pos
-exception InvalidField of string * Lex.pos
-exception InvalidCallArgs of string list * prod * Lex.pos
-exception InvalidCallee of value * Lex.pos
-exception UnexpectedCtrl of Lex.pos
+exception Redeclaration of string
+exception ImmutableAssign of string
+exception InvalidAccessee of value
+exception InvalidAccessor of Parse.expr
+exception InvalidField of string
+exception InvalidCallArgs of string list * prod
+exception InvalidCallee of value
+exception UnexpectedCtrl
 
 let bool_type : sum_type =
   [
@@ -145,14 +127,14 @@ let bool_from_bool b =
 let is_bool { type'; _ } = type' == bool_type
 let bool_not { disc; _ } = bool_from_bool (disc = 0)
 
-exception ProcTypeWithoutReturn of Lex.pos
+exception ProcTypeWithoutReturn
 exception Unreachable
 
-let rec exec_expr { Parse.inner = expr; pos } scopes =
-  let exec_binop = exec_binop pos scopes in
+let rec exec_expr expr scopes =
+  let exec_binop = exec_binop scopes in
   let exec_uop = exec_uop scopes in
-  let exec_num_binop = exec_num_binop pos scopes in
-  let exec_bool_binop = exec_bool_binop pos scopes in
+  let exec_num_binop = exec_num_binop scopes in
+  let exec_bool_binop = exec_bool_binop scopes in
   let rec eq lhs rhs =
     match (lhs, rhs) with
     | SumVariant v1, SumVariant v2 -> (
@@ -164,48 +146,94 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
         | _ -> raise Unreachable)
     | Num n1, Num n2 -> n1 = n2
     | Rune r1, Rune r2 -> r1 = r2
-    | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos))
+    | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs))
   in
   match expr with
-  | Parse.Plus binop -> exec_num_binop binop ( + )
-  | Mins binop -> exec_num_binop binop ( - )
-  | Astr binop -> exec_num_binop binop ( * )
-  | Slsh binop -> exec_num_binop binop ( / )
-  | Perc binop -> exec_num_binop binop ( mod )
-  | And binop -> exec_bool_binop binop ( && )
-  | Or binop -> exec_bool_binop binop ( || )
-  | Not operand ->
-      exec_uop operand (function
-        | SumVariant variant when is_bool variant -> None (bool_not variant)
-        | invalid -> raise (InvalidUnaryOperand (invalid, pos)))
-  | UnaryMins operand ->
-      exec_uop operand (function
-        | Num n -> None (Num (-n))
-        | invalid -> raise (InvalidUnaryOperand (invalid, pos)))
-  | Eq binop -> exec_binop binop (fun lhs rhs -> bool_from_bool (eq lhs rhs))
-  | Ne binop ->
-      exec_binop binop (fun lhs rhs -> bool_from_bool (not (eq lhs rhs)))
-  | Le binop ->
-      exec_binop binop (fun lhs rhs ->
-          match (lhs, rhs) with
-          | Num n1, Num n2 -> bool_from_bool (n1 <= n2)
-          | Rune r1, Rune r2 -> bool_from_bool (r1 <= r2)
-          | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
-  | Lt binop ->
-      exec_binop binop (fun lhs rhs ->
-          match (lhs, rhs) with
-          | Num n1, Num n2 -> bool_from_bool (n1 < n2)
-          | Rune r1, Rune r2 -> bool_from_bool (r1 < r2)
-          | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
-  | Sum variants -> exec_sum variants scopes
-  | Prod fields ->
-      let ctrl_of_fields = exec_prod fields scopes in
-      map_ctrl_of (fun fields -> None (Prod fields)) ctrl_of_fields
-  | Ident i -> (
+  | Parse.Lit lit -> (
+      match lit with
+      | Num n -> None (Num n)
+      | Rune r -> None (Rune r)
+      | String _s -> raise TODO)
+  | Id i -> (
       match List.find_map (fun scope -> StringMap.find_opt i !scope) scopes with
-      | Some entry -> None (value_from_scope_entry i pos entry)
-      | None -> raise (UnboundIdent (i, pos)))
-  | Block stmts -> exec_block stmts scopes
+      | Some entry -> None (value_from_scope_entry i entry)
+      | None -> raise (UnboundIdent i))
+  | Uop (uop, operand) -> (
+      match uop with
+      | Not ->
+          exec_uop operand (function
+            | SumVariant variant when is_bool variant -> None (bool_not variant)
+            | invalid -> raise (InvalidUnaryOperand invalid))
+      | UnaryMins ->
+          exec_uop operand (function
+            | Num n -> None (Num (-n))
+            | invalid -> raise (InvalidUnaryOperand invalid)))
+  | Binop (lhs, binop, rhs) -> (
+      match binop with
+      | Plus -> exec_num_binop lhs ( + ) rhs
+      | Mins -> exec_num_binop lhs ( - ) rhs
+      | Astr -> exec_num_binop lhs ( * ) rhs
+      | Slsh -> exec_num_binop lhs ( / ) rhs
+      | Perc -> exec_num_binop lhs ( mod ) rhs
+      | And -> exec_bool_binop lhs ( && ) rhs
+      | Or -> exec_bool_binop lhs ( || ) rhs
+      | Eq -> exec_binop lhs (fun lhs rhs -> bool_from_bool (eq lhs rhs)) rhs
+      | Ne ->
+          exec_binop lhs (fun lhs rhs -> bool_from_bool (not (eq lhs rhs))) rhs
+      | Le ->
+          exec_binop lhs
+            (fun lhs rhs ->
+              match (lhs, rhs) with
+              | Num n1, Num n2 -> bool_from_bool (n1 <= n2)
+              | Rune r1, Rune r2 -> bool_from_bool (r1 <= r2)
+              | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
+            rhs
+      | Lt ->
+          exec_binop lhs
+            (fun lhs rhs ->
+              match (lhs, rhs) with
+              | Num n1, Num n2 -> bool_from_bool (n1 < n2)
+              | Rune r1, Rune r2 -> bool_from_bool (r1 < r2)
+              | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
+            rhs
+      | Dot ->
+          let accessee = lhs in
+          let accessor =
+            match rhs with
+            | Id i -> i
+            | invalid -> raise (InvalidAccessor invalid)
+          in
+          let ctrl = exec_expr accessee scopes in
+          map_ctrl_of
+            (function
+              | Prod fields -> (
+                  match
+                    List.find_opt (fun { name; _ } -> name = accessor) fields
+                  with
+                  | Some { entry; _ } ->
+                      None (value_from_scope_entry accessor entry)
+                  | None -> raise (InvalidField accessor))
+              | Type (Sum type') -> (
+                  match
+                    List.find_opt (fun { name'; _ } -> name' = accessor) type'
+                  with
+                  | Some { disc' = disc; field_type = None; _ } ->
+                      None (SumVariant { type'; disc; field = None })
+                  | Some { disc' = disc; field_type = Some _; _ } ->
+                      None
+                        (Proc
+                           (fun fields ->
+                             match fields with
+                             | [ { name = "value"; entry } ] ->
+                                 let value =
+                                   value_from_scope_entry "value" entry
+                                 in
+                                 SumVariant { type'; disc; field = Some value }
+                             | _ ->
+                                 raise (InvalidCallArgs ([ "value" ], fields))))
+                  | None -> raise (InvalidField accessor))
+              | invalid -> raise (InvalidAccessee invalid))
+            ctrl)
   | If { cond; if_branch; else_branch } ->
       let ctrl = exec_expr cond scopes in
       map_ctrl_of
@@ -216,25 +244,18 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
               match else_branch with
               | Some else_branch -> exec_expr else_branch scopes
               | None -> None unit_val)
-          | cond -> raise (InvalidIfCond (cond, pos)))
+          | cond -> raise (InvalidIfCond cond))
         ctrl
-  | ProcType { args = { inner = args; _ }; return_type = Some return_type } ->
-      let ctrl_of_arg_types = exec_arg_types args scopes in
-      map_ctrl_of
-        (fun arg_types ->
-          let return_type_ctrl = exec_expr return_type scopes in
-          map_ctrl_of
-            (fun return_type_val ->
-              let return_type = expect_type return_type_val return_type.pos in
-              None (Type (Proc' { arg_types; return_type })))
-            return_type_ctrl)
-        ctrl_of_arg_types
-  | ProcType { return_type = None; _ } -> raise (ProcTypeWithoutReturn pos)
-  | Proc { type_' = { args = { inner = args; _ }; _ }; body } ->
+  | Sum variants -> exec_sum variants scopes
+  | Prod fields ->
+      let ctrl_of_fields = exec_prod fields scopes in
+      map_ctrl_of (fun fields -> None (Prod fields)) ctrl_of_fields
+  | Block stmts -> exec_block stmts scopes
+  | Proc { type' = { args; _ }; body } ->
       let expected = args_names args in
       None
         (Proc
-           (fun fields call_pos ->
+           (fun fields ->
              if
                List.length fields != List.length expected
                || not
@@ -251,7 +272,7 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
                          | Mut _ -> false
                          | Val _ -> true)
                        expected fields)
-             then raise (InvalidCallArgs (expected, fields, call_pos))
+             then raise (InvalidCallArgs (expected, fields))
              else
                let fields_scope =
                  List.fold_left
@@ -261,75 +282,54 @@ let rec exec_expr { Parse.inner = expr; pos } scopes =
                let ctrl = exec_block body (ref fields_scope :: scopes) in
                match ctrl with
                | None value -> value
-               | Brk pos | Ctn pos -> raise (UnexpectedCtrl pos)
-               | Ret (value, _) -> Option.value value ~default:unit_val))
-  | Field { accessed; accessor = { inner = accessor; pos = accessor_pos } } ->
-      let ctrl = exec_expr { inner = accessed; pos } scopes in
+               | Brk | Ctn -> raise UnexpectedCtrl
+               | Ret value -> Option.value value ~default:unit_val))
+  | ProcT { args; return_type = Some return_type } ->
+      let ctrl_of_arg_types = exec_arg_types args scopes in
       map_ctrl_of
-        (function
-          | Prod fields -> (
-              match
-                List.find_opt (fun { name; _ } -> name = accessor) fields
-              with
-              | Some { entry; _ } ->
-                  None (value_from_scope_entry accessor pos entry)
-              | None -> raise (InvalidField (accessor, accessor_pos)))
-          | Type (Sum type') -> (
-              match
-                List.find_opt (fun { name'; _ } -> name' = accessor) type'
-              with
-              | Some { disc' = disc; field_type = None; _ } ->
-                  None (SumVariant { type'; disc; field = None })
-              | Some { disc' = disc; field_type = Some _; _ } ->
-                  None
-                    (Proc
-                       (fun fields pos ->
-                         match fields with
-                         | [ { name = "value"; entry } ] ->
-                             let value =
-                               value_from_scope_entry "value" pos entry
-                             in
-                             SumVariant { type'; disc; field = Some value }
-                         | _ ->
-                             raise (InvalidCallArgs ([ "value" ], fields, pos))))
-              | None -> raise (InvalidField (accessor, accessor_pos)))
-          | invalid -> raise (InvalidAccess (invalid, pos)))
-        ctrl
-  | Call { callee; args' = { inner = args; pos = args_pos } } ->
-      let ctrl = exec_expr { inner = callee; pos } scopes in
+        (fun arg_types ->
+          let return_type_ctrl = exec_expr return_type scopes in
+          map_ctrl_of
+            (fun return_type_val ->
+              let return_type = expect_type return_type_val in
+              None (Type (Proc' { arg_types; return_type })))
+            return_type_ctrl)
+        ctrl_of_arg_types
+  | ProcT { return_type = None; _ } -> raise ProcTypeWithoutReturn
+  | Call { callee; args } ->
+      let ctrl = exec_expr callee scopes in
       map_ctrl_of
         (function
           | Proc f ->
               let ctrl = exec_prod args scopes in
-              map_ctrl_of (fun fields -> None (f fields args_pos)) ctrl
-          | invalid -> raise (InvalidCallee (invalid, pos)))
+              map_ctrl_of (fun fields -> None (f fields)) ctrl
+          | invalid -> raise (InvalidCallee invalid))
         ctrl
-  | Num n -> None (Num n)
-  | Rune r -> None (Rune r)
-  | String _s -> raise TODO
 
-and exec_binop pos scopes { Parse.lhs; rhs } op =
-  let ctrl = exec_expr { inner = lhs; pos } scopes in
+and exec_binop scopes lhs op rhs =
+  let ctrl = exec_expr lhs scopes in
   map_ctrl_of
     (fun lhs ->
       let ctrl = exec_expr rhs scopes in
       map_ctrl_of (fun rhs -> None (op lhs rhs)) ctrl)
     ctrl
 
-and exec_num_binop pos scopes binop op =
-  exec_binop pos scopes binop (fun lhs rhs ->
+and exec_num_binop scopes lhs op rhs =
+  exec_binop scopes lhs
+    (fun lhs rhs ->
       match (lhs, rhs) with
       | Num n1, Num n2 -> Num (op n1 n2)
-      | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
+      | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
+    rhs
 
-and exec_bool_binop pos scopes binop op =
-  exec_binop pos scopes binop (fun lhs rhs ->
+and exec_bool_binop scopes binop op =
+  exec_binop scopes binop (fun lhs rhs ->
       match (lhs, rhs) with
       | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
           let d1 = v1.disc != 0 in
           let d2 = v2.disc != 0 in
           bool_from_bool (op d1 d2)
-      | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs, pos)))
+      | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
 
 and exec_uop scopes operand op =
   let ctrl = exec_expr operand scopes in
@@ -338,19 +338,20 @@ and exec_uop scopes operand op =
 and exec_sum variants scopes =
   let ctrl_of_variants =
     List.fold_left
-      (fun ctrl { Parse.inner = { Parse.name'; value''' }; _ } ->
+      (fun ctrl ({ Parse.name; value } : Parse.sum_var) ->
         map_ctrl_of
           (fun variants ->
             let disc' = Oo.id (object end) in
-            match value''' with
+            match value with
             | Some value ->
                 let field_type_ctrl = exec_expr value scopes in
                 map_ctrl_of
                   (fun field_type ->
-                    let field_type = Some (expect_type field_type value.pos) in
-                    None (variants @ [ { name'; disc'; field_type } ]))
+                    let field_type = Some (expect_type field_type) in
+                    None (variants @ [ { name' = name; disc'; field_type } ]))
                   field_type_ctrl
-            | None -> None (variants @ [ { name'; disc'; field_type = None } ]))
+            | None ->
+                None (variants @ [ { name' = name; disc'; field_type = None } ]))
           ctrl)
       (None []) variants
   in
@@ -359,18 +360,13 @@ and exec_sum variants scopes =
 and exec_prod fields scopes =
   let _, ctrl =
     List.fold_left
-      (fun (prev_kind, ctrl) { Parse.inner = field; pos } ->
+      (fun (prev_kind, ctrl) (field : Parse.prod_field) ->
         match ctrl with
         | None fields -> (
             match field with
-            | Parse.Decl'
-                {
-                  kind';
-                  name_or_count = { inner = Ident'' name; _ };
-                  value'' = Some value;
-                  _;
-                } -> (
-                let kind = Option.value kind' ~default:prev_kind in
+            | Parse.Decl
+                { kind; name_or_count = Name name; value = Some value; _ } -> (
+                let kind = Option.value kind ~default:prev_kind in
                 let ctrl = exec_expr value scopes in
                 let () =
                   match
@@ -378,20 +374,20 @@ and exec_prod fields scopes =
                       (fun { name = existing_name; _ } -> existing_name = name)
                       fields
                   with
-                  | Some { name; _ } -> raise (Redeclaration (name, pos))
+                  | Some { name; _ } -> raise (Redeclaration name)
                   | None -> ()
                 in
                 match ctrl with
                 | None value ->
                     let entry = scope_entry_from_kind kind value in
                     (kind, None (fields @ [ { name; entry } ]))
-                | Brk pos -> (kind, Brk pos)
-                | Ctn pos -> (kind, Ctn pos)
-                | Ret (value, pos) -> (kind, Ret (value, pos)))
+                | Brk -> (kind, Brk)
+                | Ctn -> (kind, Ctn)
+                | Ret value -> (kind, Ret value))
             | _ -> raise TODO)
-        | Brk pos -> (prev_kind, Brk pos)
-        | Ctn pos -> (prev_kind, Ctn pos)
-        | Ret (value, pos) -> (prev_kind, Ret (value, pos)))
+        | Brk -> (prev_kind, Brk)
+        | Ctn -> (prev_kind, Ctn)
+        | Ret value -> (prev_kind, Ret value))
       (Parse.Val, None []) fields
   in
   ctrl
@@ -399,48 +395,47 @@ and exec_prod fields scopes =
 and exec_arg_types args scopes =
   let _, ctrl =
     List.fold_left
-      (fun (prev_kind, ctrl) { Parse.inner = arg; pos } ->
+      (fun (prev_kind, ctrl) (arg : Parse.prod_field) ->
         match ctrl with
         | None args -> (
             match arg with
-            | Parse.Decl'
+            | Parse.Decl
                 {
-                  kind';
-                  name_or_count = { inner = Ident'' name''; _ };
-                  type_'' = Some type_;
-                  value'' = None;
+                  kind;
+                  name_or_count = Name name;
+                  type' = Some type_;
+                  value = None;
                 } -> (
-                let kind = Option.value kind' ~default:prev_kind in
+                let kind = Option.value kind ~default:prev_kind in
                 let ctrl = exec_expr type_ scopes in
                 let () =
                   match
                     List.find_opt
                       (fun { name'' = existing_name; _ } ->
-                        existing_name = name'')
+                        existing_name = name)
                       args
                   with
-                  | Some { name''; _ } -> raise (Redeclaration (name'', pos))
+                  | Some { name''; _ } -> raise (Redeclaration name'')
                   | None -> ()
                 in
                 match ctrl with
                 | None type_val ->
-                    let type'' = expect_type type_val type_.pos in
-                    (kind, None (args @ [ { kind; name''; type'' } ]))
-                | Brk pos -> (kind, Brk pos)
-                | Ctn pos -> (kind, Ctn pos)
-                | Ret (value, pos) -> (kind, Ret (value, pos)))
+                    let type'' = expect_type type_val in
+                    (kind, None (args @ [ { kind; name'' = name; type'' } ]))
+                | Brk -> (kind, Brk)
+                | Ctn -> (kind, Ctn)
+                | Ret value -> (kind, Ret value))
             | _ -> raise TODO)
-        | Brk pos -> (prev_kind, Brk pos)
-        | Ctn pos -> (prev_kind, Ctn pos)
-        | Ret (value, pos) -> (prev_kind, Ret (value, pos)))
+        | Brk -> (prev_kind, Brk)
+        | Ctn -> (prev_kind, Ctn)
+        | Ret value -> (prev_kind, Ret value))
       (Parse.Val, None []) args
   in
   ctrl
 
 and exec_block stmts scopes =
   match stmts with
-  | [ { inner = Expr expr; pos } ] ->
-      exec_expr { inner = expr; pos } (ref StringMap.empty :: scopes)
+  | [ Expr expr ] -> exec_expr expr (ref StringMap.empty :: scopes)
   | [ stmt ] ->
       let ctrl = exec_stmt stmt (ref StringMap.empty :: scopes) in
       map_ctrl_of (fun () -> None unit_val) ctrl
@@ -456,18 +451,17 @@ and exec_nonsingle_block stmts scopes =
   | [] -> None ()
 
 (* scopes must be non-empty. *)
-and exec_stmt { Parse.inner = stmt; pos } scopes =
+and exec_stmt stmt scopes =
   match stmt with
-  | Parse.Brk -> Brk pos
-  | Ctn -> Ctn pos
+  | Parse.Brk -> Brk
+  | Ctn -> Ctn
   | Ret value -> (
       match value with
       | Some value ->
           let ctrl = exec_expr value scopes in
-          map_ctrl_of (fun value -> Ret (Some value, pos)) ctrl
-      | None -> Ret (None, pos))
-  | Decl { kind = { inner = kind; _ }; name = { inner = name; _ }; value; _ }
-    -> (
+          map_ctrl_of (fun value -> Ret (Some value)) ctrl
+      | None -> Ret None)
+  | Decl { kind; name; value; _ } -> (
       match (kind, value) with
       | _, Some value ->
           let ctrl = exec_expr value scopes in
@@ -477,7 +471,7 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
               let scope = List.hd scopes in
               let () =
                 match StringMap.find_opt name !scope with
-                | Some _ -> raise (Redeclaration (name, pos))
+                | Some _ -> raise (Redeclaration name)
                 | None -> ()
               in
               scope := StringMap.add name entry !scope;
@@ -487,54 +481,55 @@ and exec_stmt { Parse.inner = stmt; pos } scopes =
           let scope = List.hd scopes in
           let () =
             match StringMap.find_opt name !scope with
-            | Some _ -> raise (Redeclaration (name, pos))
+            | Some _ -> raise (Redeclaration name)
             | None -> ()
           in
           scope := StringMap.add name (Mut (ref Option.None)) !scope;
           None ()
-      | Val, None -> raise (UninitializedVal (name, pos)))
-  | Assign { assignee; value' } -> (
-      let try_scope_entry_assign assignee' scopes =
+      | Val, None -> raise (UninitializedVal name))
+  | Assign { assignee; value } -> (
+      let try_scope_entry_assign name assignee' scopes =
         match assignee' with
         | Mut value_ref ->
-            let ctrl = exec_expr value' scopes in
+            let ctrl = exec_expr value scopes in
             map_ctrl_of
               (fun value ->
                 value_ref := Some value;
                 None ())
               ctrl
-        | _ -> raise (ImmutableAssign (assignee, pos))
+        | _ -> raise (ImmutableAssign name)
       in
       match assignee with
-      | Ident' i -> (
+      | Id i -> (
           match
             List.find_map (fun scope -> StringMap.find_opt i !scope) scopes
           with
-          | Some assignee -> try_scope_entry_assign assignee scopes
-          | None -> raise (UnboundIdent (i, pos)))
-      | Field' { accessed; accessor = { inner = accessor; pos = accessor_pos } }
-        ->
-          let ctrl = exec_expr { inner = accessed; pos } scopes in
+          | Some assignee -> try_scope_entry_assign i assignee scopes
+          | None -> raise (UnboundIdent i))
+      | Binop (accessee, Dot, Id accessor) ->
+          let ctrl = exec_expr accessee scopes in
           map_ctrl_of
             (function
               | Prod fields -> (
                   match
                     List.find_opt (fun { name; _ } -> name = accessor) fields
                   with
-                  | Some { entry; _ } -> try_scope_entry_assign entry scopes
-                  | None -> raise (InvalidField (accessor, accessor_pos)))
-              | invalid -> raise (InvalidAccess (invalid, pos)))
-            ctrl)
+                  | Some { entry; _ } ->
+                      try_scope_entry_assign accessor entry scopes
+                  | None -> raise (InvalidField accessor))
+              | invalid -> raise (InvalidAccessee invalid))
+            ctrl
+      | _ -> raise TODO)
   | Loop body -> exec_loop body scopes
   | Expr expr ->
-      let value = exec_expr { inner = expr; pos } scopes in
+      let value = exec_expr expr scopes in
       map_ctrl_of (fun _ -> None ()) value
 
 and exec_loop body scopes =
   let ctrl = exec_expr body scopes in
   match ctrl with
-  | Brk _ -> None ()
-  | Ret (value, pos) -> Ret (value, pos)
+  | Brk -> None ()
+  | Ret value -> Ret value
   | _ -> exec_loop body scopes
 
 let rec stringify value =
@@ -702,7 +697,7 @@ let%expect_test _ =
 |}]
 
 let%expect_test _ =
-  stringify (Proc (fun _ _ -> unit_val)) |> print_endline;
+  stringify (Proc (fun _ -> unit_val)) |> print_endline;
   [%expect "proc(...) { ... }"]
 
 let%expect_test _ =
@@ -801,13 +796,13 @@ let intrinsics =
       entry =
         Val
           (Proc
-             (fun fields pos ->
+             (fun fields ->
                match fields with
                | [ { name = "value"; entry } ] ->
-                   let value = value_from_scope_entry "value" pos entry in
+                   let value = value_from_scope_entry "value" entry in
                    let () = stringify value |> print_endline in
                    unit_val
-               | _ -> raise (InvalidCallArgs ([ "value" ], fields, pos))));
+               | _ -> raise (InvalidCallArgs ([ "value" ], fields))));
     };
   ]
 
@@ -823,296 +818,257 @@ let exec_ast ast =
   let ctrl = exec_expr ast [ ref builtins ] in
   match ctrl with
   | None value -> value
-  | Brk pos | Ctn pos | Ret (_, pos) -> raise (UnexpectedCtrl pos)
+  | Brk | Ctn | Ret _ -> raise UnexpectedCtrl
 
 exception ExpectedProc
 
 let exec path =
   let text = Core.In_channel.read_lines path |> String.concat "\n" in
-  let ast = Parse.parse text path in
-  let _ =
-    match exec_ast ast with
-    | Proc f -> f [] { path; row = 0; col = 0 }
-    | _ -> raise ExpectedProc
-  in
+  let ast = Parse.parse text in
+  let _ = match exec_ast ast with Proc f -> f [] | _ -> raise ExpectedProc in
   ()
 
 let assert_raises = OUnit2.assert_raises
 let parse = Parse.parse
 
 let%test _ =
-  let ast = parse "5 + 9" "test.zt" in
+  let ast = parse "5 + 9" in
   Num 14 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "5 == True" "test.zt" in
+  let ast = parse "5 == True" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidBinopOperands
-       (Num 5, bool_from_bool true, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidBinopOperands (Num 5, bool_from_bool true)) f
 
 let%test_unit _ =
-  let ast = parse "False + True" "test.zt" in
+  let ast = parse "False + True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands
-       ( bool_from_bool false,
-         bool_from_bool true,
-         { path = "test.zt"; row = 1; col = 1 } ))
+    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "5 - 9" "test.zt" in
+  let ast = parse "5 - 9" in
   Num (-4) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False - True" "test.zt" in
+  let ast = parse "False - True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands
-       ( bool_from_bool false,
-         bool_from_bool true,
-         { path = "test.zt"; row = 1; col = 1 } ))
+    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "5 * 9" "test.zt" in
+  let ast = parse "5 * 9" in
   Num 45 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False * True" "test.zt" in
+  let ast = parse "False * True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands
-       ( bool_from_bool false,
-         bool_from_bool true,
-         { path = "test.zt"; row = 1; col = 1 } ))
+    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "5 / 9" "test.zt" in
+  let ast = parse "5 / 9" in
   Num 0 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False / True" "test.zt" in
+  let ast = parse "False / True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands
-       ( bool_from_bool false,
-         bool_from_bool true,
-         { path = "test.zt"; row = 1; col = 1 } ))
+    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "5 % 9" "test.zt" in
+  let ast = parse "5 % 9" in
   Num 5 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False % True" "test.zt" in
+  let ast = parse "False % True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands
-       ( bool_from_bool false,
-         bool_from_bool true,
-         { path = "test.zt"; row = 1; col = 1 } ))
+    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "True && False" "test.zt" in
+  let ast = parse "True && False" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "True && True" "test.zt" in
+  let ast = parse "True && True" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "5 && 9" "test.zt" in
+  let ast = parse "5 && 9" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidBinopOperands (Num 5, Num 9, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidBinopOperands (Num 5, Num 9)) f
 
 let%test _ =
-  let ast = parse "False || True" "test.zt" in
+  let ast = parse "False || True" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "True || False" "test.zt" in
+  let ast = parse "True || False" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "False || False" "test.zt" in
+  let ast = parse "False || False" in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "5 || 9" "test.zt" in
+  let ast = parse "5 || 9" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidBinopOperands (Num 5, Num 9, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidBinopOperands (Num 5, Num 9)) f
 
 let%test _ =
-  let ast = parse "!False" "test.zt" in
+  let ast = parse "!False" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "!True" "test.zt" in
+  let ast = parse "!True" in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "!5" "test.zt" in
+  let ast = parse "!5" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidUnaryOperand (Num 5, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidUnaryOperand (Num 5)) f
 
 let%test _ =
-  let ast = parse "-5" "test.zt" in
+  let ast = parse "-5" in
   Num (-5) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "-False" "test.zt" in
+  let ast = parse "-False" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidUnaryOperand
-       (bool_from_bool false, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidUnaryOperand (bool_from_bool false)) f
 
 let%test _ =
-  let ast = parse "False == True" "test.zt" in
+  let ast = parse "False == True" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "True == True" "test.zt" in
+  let ast = parse "True == True" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 == 9" "test.zt" in
+  let ast = parse "5 == 9" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 == 5" "test.zt" in
+  let ast = parse "5 == 5" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' == 'q'" "test.zt" in
+  let ast = parse "'r' == 'q'" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' == 'r'" "test.zt" in
+  let ast = parse "'r' == 'r'" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "False != True" "test.zt" in
+  let ast = parse "False != True" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "True != True" "test.zt" in
+  let ast = parse "True != True" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 != 9" "test.zt" in
+  let ast = parse "5 != 9" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 != 5" "test.zt" in
+  let ast = parse "5 != 5" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' != 'q'" "test.zt" in
+  let ast = parse "'r' != 'q'" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' != 'r'" "test.zt" in
+  let ast = parse "'r' != 'r'" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 <= 5" "test.zt" in
+  let ast = parse "5 <= 5" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "9 <= 5" "test.zt" in
+  let ast = parse "9 <= 5" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' <= 'q'" "test.zt" in
+  let ast = parse "'r' <= 'q'" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'q' <= 'q'" "test.zt" in
+  let ast = parse "'q' <= 'q'" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False <= True" "test.zt" in
+  let ast = parse "False <= True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands
-       ( bool_from_bool false,
-         bool_from_bool true,
-         { path = "test.zt"; row = 1; col = 1 } ))
+    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "5 < 5" "test.zt" in
+  let ast = parse "5 < 5" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "5 < 9" "test.zt" in
+  let ast = parse "5 < 9" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "'r' < 'r'" "test.zt" in
+  let ast = parse "'r' < 'r'" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "'q' <= 'r'" "test.zt" in
+  let ast = parse "'q' <= 'r'" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False < True" "test.zt" in
+  let ast = parse "False < True" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidBinopOperands
-       ( bool_from_bool false,
-         bool_from_bool true,
-         { path = "test.zt"; row = 1; col = 1 } ))
+    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "if True 5 else 9" "test.zt" in
+  let ast = parse "if True then 5 else 9" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if False 5 else 9" "test.zt" in
+  let ast = parse "if False then 5 else 9" in
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if False 5" "test.zt" in
+  let ast = parse "if False then 5" in
   unit_val = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "if 9 5 else 9" "test.zt" in
+  let ast = parse "if 9 then 5 else 9" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidIfCond (Num 9, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidIfCond (Num 9)) f
 
 let%test _ =
-  let ast = parse "()" "test.zt" in
+  let ast = parse "()" in
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9)" "test.zt" in
+  let ast = parse "(val i = 9)" in
   Prod [ { name = "i"; entry = Val (Num 9) } ] = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "(val i = 9, val i = 9)" "test.zt" in
+  let ast = parse "(val i = 9, val i = 9)" in
   let f () = exec_ast ast in
-  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 1; col = 13 })) f
+  assert_raises (Redeclaration "i") f
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True)" "test.zt" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True)" in
   Prod
     [
       { name = "i"; entry = Val (Num 9) };
@@ -1122,39 +1078,37 @@ let%test _ =
   = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9).i" "test.zt" in
+  let ast = parse "(val i = 9).i" in
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).j" "test.zt" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).j" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" "test.zt" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" "test.zt" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "().i" "test.zt" in
+  let ast = parse "().i" in
   let f () = exec_ast ast in
-  assert_raises (InvalidField ("i", { path = "test.zt"; row = 1; col = 4 })) f
+  assert_raises (InvalidField "i") f
 
 let%test_unit _ =
-  let ast = parse "1.i" "test.zt" in
+  let ast = parse "1.i" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidAccess (Num 1, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidAccessee (Num 1)) f
 
 let%test _ =
-  let ast = parse "[]" "test.zt" in
+  let ast = parse "[]" in
   match exec_ast ast with Type (Sum []) -> true | _ -> false
 
 let%test _ =
-  let ast = parse "[Red, Green(Num), Blue(Rune)]" "test.zt" in
+  let ast = parse "[Red, Green(Num), Blue(Rune)]" in
   match exec_ast ast with
   | Type
       (Sum
@@ -1167,38 +1121,33 @@ let%test _ =
   | _ -> false
 
 let%test _ =
-  let ast = parse "[Red].Red" "test.zt" in
+  let ast = parse "[Red].Red" in
   match exec_ast ast with SumVariant { field = None; _ } -> true | _ -> false
 
 let%test _ =
-  let ast = parse "[Green(Num)].Green(value = 5)" "test.zt" in
+  let ast = parse "[Green(Num)].Green(value = 5)" in
   match exec_ast ast with
   | SumVariant { field = Some (Num 5); _ } -> true
   | _ -> false
 
 let%test_unit _ =
-  let ast = parse "[Green(Num)].Green(foo = 5)" "test.zt" in
+  let ast = parse "[Green(Num)].Green(foo = 5)" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidCallArgs
-       ( [ "value" ],
-         [ { name = "foo"; entry = Val (Num 5) } ],
-         { path = "test.zt"; row = 1; col = 19 } ))
+    (InvalidCallArgs ([ "value" ], [ { name = "foo"; entry = Val (Num 5) } ]))
     f
 
 let%test_unit _ =
-  let ast = parse "[].Blue" "test.zt" in
+  let ast = parse "[].Blue" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidField ("Blue", { path = "test.zt"; row = 1; col = 4 }))
-    f
+  assert_raises (InvalidField "Blue") f
 
 let%test _ =
   (*
   The two sums are separate, so the variants aren't equal though they happen to
   have the same names
   *)
-  let ast = parse "[Red].Red == [Red].Red" "test.zt" in
+  let ast = parse "[Red].Red == [Red].Red" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
@@ -1210,7 +1159,6 @@ let%test _ =
       ret sum.Green == sum.Green
     }()
   |}
-      "test.zt"
   in
   bool_from_bool true = exec_ast ast
 
@@ -1223,7 +1171,6 @@ let%test _ =
       ret sum.Green(value = 5) == sum.Green(value = 5)
     }()
   |}
-      "test.zt"
   in
   bool_from_bool true = exec_ast ast
 
@@ -1236,7 +1183,6 @@ let%test _ =
       ret sum.Green(value = 5) == sum.Green(value = 9)
     }()
   |}
-      "test.zt"
   in
   bool_from_bool false = exec_ast ast
 
@@ -1249,81 +1195,68 @@ let%test _ =
       ret sum.Green(value = 5) == sum.Blue(value = 5)
     }()
   |}
-      "test.zt"
   in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "[].Blue" "test.zt" in
+  let ast = parse "[].Blue" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidField ("Blue", { path = "test.zt"; row = 1; col = 4 }))
-    f
+  assert_raises (InvalidField "Blue") f
 
 let%test_unit _ =
-  let ast = parse "[Blue(5)]" "test.zt" in
+  let ast = parse "[Blue(5)]" in
   let f () = exec_ast ast in
-  assert_raises (ValueAsType (Num 5, { path = "test.zt"; row = 1; col = 7 })) f
+  assert_raises (ValueAsType (Num 5)) f
 
 let%test _ =
-  let ast = parse "{ proc() { } }()" "test.zt" in
+  let ast = parse "{ proc() { } }()" in
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc(val i: Nat) { i + 1 } }(val i = 2)" "test.zt" in
+  let ast = parse "{ proc(val i: Nat) { i + 1 } }(val i = 2)" in
   Num 3 = exec_ast ast
 
 let%test _ =
   let ast =
     parse "{ proc(val i: Nat, val j: Nat) { i * j } }(val i = 2, val j = 9)"
-      "test.zt"
   in
   Num 18 = exec_ast ast
 
 let%test _ =
-  let ast =
-    parse "{ proc(val i, j: Nat) { i * j } }(val i = 2, val j = 9)" "test.zt"
-  in
+  let ast = parse "{ proc(val i, j: Nat) { i * j } }(val i = 2, val j = 9)" in
   Num 18 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "{ proc(val i: Nat) { i } }(val j = 2)" "test.zt" in
+  let ast = parse "{ proc(val i: Nat) { i } }(val j = 2)" in
   let f () = exec_ast ast in
   assert_raises
-    (InvalidCallArgs
-       ( [ "i" ],
-         [ { name = "j"; entry = Val (Num 2) } ],
-         { path = "test.zt"; row = 1; col = 27 } ))
+    (InvalidCallArgs ([ "i" ], [ { name = "j"; entry = Val (Num 2) } ]))
     f
 
 let%test_unit _ =
-  let ast = parse "{ proc(val i: Nat) { i } }()" "test.zt" in
+  let ast = parse "{ proc(val i: Nat) { i } }()" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidCallArgs ([ "i" ], [], { path = "test.zt"; row = 1; col = 27 }))
-    f
+  assert_raises (InvalidCallArgs ([ "i" ], [])) f
 
 let%test_unit _ =
-  let ast = parse "proc(mut i: Nat) { i }" "test.zt" in
+  let ast = parse "proc(mut i: Nat) { i }" in
   let f () = exec_ast ast in
-  assert_raises (MutArgument { path = "test.zt"; row = 1; col = 6 }) f
+  assert_raises MutArgument f
 
 let%test_unit _ =
-  let ast = parse "proc(val 5: Nat) { }" "test.zt" in
+  let ast = parse "proc(val 5: Nat) { }" in
   let f () = exec_ast ast in
-  assert_raises (NumAsArgumentName { path = "test.zt"; row = 1; col = 10 }) f
+  assert_raises NumAsArgumentName f
 
 let%test_unit _ =
-  let ast = parse "proc('a') { }" "test.zt" in
+  let ast = parse "proc('a') { }" in
   let f () = exec_ast ast in
-  assert_raises (ValueAsArgument { path = "test.zt"; row = 1; col = 6 }) f
+  assert_raises ValueAsArgument f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { foo } }()" "test.zt" in
+  let ast = parse "{ proc() { foo } }()" in
   let f () = exec_ast ast in
-  assert_raises
-    (UnboundIdent ("foo", { path = "test.zt"; row = 1; col = 12 }))
-    f
+  assert_raises (UnboundIdent "foo") f
 
 let%test _ =
   let ast =
@@ -1340,7 +1273,6 @@ let%test _ =
       }
     }()
   |}
-      "test.zt"
   in
   Num 2 = exec_ast ast
 
@@ -1355,12 +1287,9 @@ let%test_unit _ =
       }
     }()
   |}
-      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises
-    (UseBeforeInitialization ("i", { path = "test.zt"; row = 5; col = 13 }))
-    f
+  assert_raises (UseBeforeInitialization "i") f
 
 let%test _ =
   let ast =
@@ -1370,7 +1299,7 @@ let%test _ =
       proc() {
         mut b = False
         loop {
-          if b {
+          if b then {
             brk
           }
 
@@ -1385,12 +1314,11 @@ let%test _ =
       }
     }()
   |}
-      "test.zt"
   in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { loop { ret 'a' } } }()" "test.zt" in
+  let ast = parse "{ proc() { loop { ret 'a' } } }()" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
@@ -1399,7 +1327,7 @@ let%test _ =
       {|
     {
       proc() {
-        if { if True { ret 9 } else True } {
+        if { if True then { ret 9 } else True } then {
           ret 3
         }
 
@@ -1407,49 +1335,46 @@ let%test _ =
       }
     }()
   |}
-      "test.zt"
   in
   Num 9 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "{ proc() { brk } }()" "test.zt" in
+  let ast = parse "{ proc() { brk } }()" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 12 }) f
+  assert_raises UnexpectedCtrl f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { ctn } }()" "test.zt" in
+  let ast = parse "{ proc() { ctn } }()" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 12 }) f
+  assert_raises UnexpectedCtrl f
 
 let%test _ =
-  let ast = parse "{ proc() { { ret 5 }.foo } }()" "test.zt" in
+  let ast = parse "{ proc() { { ret 5 }.foo } }()" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { { ret 5 }() } }()" "test.zt" in
+  let ast = parse "{ proc() { { ret 5 }() } }()" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { { ret 5 } + 1 } }()" "test.zt" in
+  let ast = parse "{ proc() { { ret 5 } + 1 } }()" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { 1 + { ret 5 } } }()" "test.zt" in
+  let ast = parse "{ proc() { 1 + { ret 5 } } }()" in
   Num 5 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "1()" "test.zt" in
+  let ast = parse "1()" in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidCallee (Num 1, { path = "test.zt"; row = 1; col = 1 }))
-    f
+  assert_raises (InvalidCallee (Num 1)) f
 
 let%test _ =
-  let ast = parse "{ proc() { mut i } }()" "test.zt" in
+  let ast = parse "{ proc() { mut i } }()" in
   unit_val = exec_ast ast
 
 let%test _ =
-  let ast = parse "{ proc() { ret } }()" "test.zt" in
+  let ast = parse "{ proc() { ret } }()" in
   unit_val = exec_ast ast
 
 let%test_unit _ =
@@ -1463,10 +1388,9 @@ let%test_unit _ =
       }
     }()
   |}
-      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 5; col = 9 })) f
+  assert_raises (Redeclaration "i") f
 
 let%test_unit _ =
   let ast =
@@ -1479,17 +1403,14 @@ let%test_unit _ =
       }
     }()
   |}
-      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 5; col = 9 })) f
+  assert_raises (Redeclaration "i") f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { val i } }()" "test.zt" in
+  let ast = parse "{ proc() { val i } }()" in
   let f () = exec_ast ast in
-  assert_raises
-    (UninitializedVal ("i", { path = "test.zt"; row = 1; col = 12 }))
-    f
+  assert_raises (UninitializedVal "i") f
 
 let%test_unit _ =
   let ast =
@@ -1502,40 +1423,35 @@ let%test_unit _ =
       }
     }()
   |}
-      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises
-    (ImmutableAssign (Ident' "i", { path = "test.zt"; row = 5; col = 9 }))
-    f
+  assert_raises (ImmutableAssign "i") f
 
 let%test_unit _ =
-  let ast =
-    parse {|
+  let ast = parse {|
     {
       proc() {
         i = 1
       }
     }()
-  |} "test.zt"
-  in
+  |} in
   let f () = exec_ast ast in
-  assert_raises (UnboundIdent ("i", { path = "test.zt"; row = 4; col = 9 })) f
+  assert_raises (UnboundIdent "i") f
 
 let%test_unit _ =
-  let ast = parse "{ brk }" "test.zt" in
+  let ast = parse "{ brk }" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 3 }) f
+  assert_raises UnexpectedCtrl f
 
 let%test_unit _ =
-  let ast = parse "{ ctn }" "test.zt" in
+  let ast = parse "{ ctn }" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 3 }) f
+  assert_raises UnexpectedCtrl f
 
 let%test_unit _ =
-  let ast = parse "{ ret }" "test.zt" in
+  let ast = parse "{ ret }" in
   let f () = exec_ast ast in
-  assert_raises (UnexpectedCtrl { path = "test.zt"; row = 1; col = 3 }) f
+  assert_raises UnexpectedCtrl f
 
 let%test _ =
   let ast =
@@ -1549,7 +1465,6 @@ let%test _ =
       }
     }()
   |}
-      "test.zt"
   in
   Num 9 = exec_ast ast
 
@@ -1565,12 +1480,9 @@ let%test_unit _ =
       }
     }()
   |}
-      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidField ("bogus", { path = "test.zt"; row = 5; col = 11 }))
-    f
+  assert_raises (InvalidField "bogus") f
 
 let%test_unit _ =
   let ast =
@@ -1584,19 +1496,16 @@ let%test_unit _ =
       }
     }()
   |}
-      "test.zt"
   in
   let f () = exec_ast ast in
-  assert_raises
-    (InvalidAccess (Num 1, { path = "test.zt"; row = 5; col = 9 }))
-    f
+  assert_raises (InvalidAccessee (Num 1)) f
 
 let%test _ =
-  let ast = parse "proc(): Num" "test.zt" in
+  let ast = parse "proc(): Num" in
   Type (Proc' { arg_types = []; return_type = Num' }) = exec_ast ast
 
 let%test _ =
-  let ast = parse "proc(foo: Num): Num" "test.zt" in
+  let ast = parse "proc(foo: Num): Num" in
   Type
     (Proc'
        {
@@ -1606,7 +1515,7 @@ let%test _ =
   = exec_ast ast
 
 let%test _ =
-  let ast = parse "proc(mut foo: Num, baz: Rune): Num" "test.zt" in
+  let ast = parse "proc(mut foo: Num, baz: Rune): Num" in
   Type
     (Proc'
        {
@@ -1620,11 +1529,11 @@ let%test _ =
   = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "proc(i: Num, i: Num): Num" "test.zt" in
+  let ast = parse "proc(i: Num, i: Num): Num" in
   let f () = exec_ast ast in
-  assert_raises (Redeclaration ("i", { path = "test.zt"; row = 1; col = 14 })) f
+  assert_raises (Redeclaration "i") f
 
 let%test_unit _ =
-  let ast = parse "proc(i: Num)" "test.zt" in
+  let ast = parse "proc(i: Num)" in
   let f () = exec_ast ast in
-  assert_raises (ProcTypeWithoutReturn { path = "test.zt"; row = 1; col = 1 }) f
+  assert_raises ProcTypeWithoutReturn f
