@@ -1,7 +1,7 @@
 (env
  (dev
   (flags
-   (:standard -w -30 -warn-error -26-32))))
+   (:standard -w -30 -warn-error -26-32-37))))
 
 (library
  (name zettai_bootstrap)

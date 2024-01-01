@@ -15,8 +15,14 @@ and prod_field = { name : string; entry : scope_entry }
 and prod = prod_field list
 and sum_variant = { type' : sum_type; disc : int; field : value option }
 
-(* TODO: add the rest of the variants and typecheck everything *)
-and type' = Num | Rune | Sum of sum_type | Proc of proc_type
+(* TODO: typecheck everything *)
+and type' =
+  | Num
+  | Rune
+  | Sum of sum_type
+  | Prod of prod_field_type list
+  | Proc of proc_type
+
 and sum_type = sum_variant_type list
 and sum_variant_type = { name : string; disc : int; field_type : type' option }
 and prod_field_type = { kind : Parse.kind; name : string; type' : type' }
@@ -585,6 +591,20 @@ let rec stringify value =
           in
           let variants_string = String.concat "\n  " variant_strings in
           "[\n  " ^ variants_string ^ "\n]"
+      | Prod [] -> "()"
+      | Prod fields ->
+          let field_strings =
+            List.map
+              (fun { kind; name; type' } ->
+                let kind_string =
+                  match kind with Mut -> "mut" | Val -> "val"
+                in
+                let type_string = stringify (Type type') in
+                kind_string ^ " " ^ name ^ ": " ^ type_string)
+              fields
+          in
+          let fields_string = String.concat "\n  " field_strings in
+          "(\n  " ^ fields_string ^ "\n)"
       | Proc { arg_types; return_type } ->
           let arg_types_string =
             match arg_types with
