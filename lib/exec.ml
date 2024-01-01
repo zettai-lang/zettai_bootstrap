@@ -16,16 +16,10 @@ and prod = prod_field list
 and sum_variant = { type' : sum_type; disc : int; field : value option }
 
 (* TODO: add the rest of the variants and typecheck everything *)
-and type' = Num' | Rune' | Sum of sum_type | Proc' of proc_type
+and type' = Num | Rune | Sum of sum_type | Proc of proc_type
 and sum_type = sum_variant_type list
-
-and sum_variant_type = {
-  name' : string;
-  disc' : int;
-  field_type : type' option;
-}
-
-and prod_field_type = { kind : Parse.kind; name'' : string; type'' : type' }
+and sum_variant_type = { name : string; disc : int; field_type : type' option }
+and prod_field_type = { kind : Parse.kind; name : string; type' : type' }
 and proc_type = { arg_types : prod_field_type list; return_type : type' }
 
 let scope_entry_from_kind kind value =
@@ -117,8 +111,8 @@ exception UnexpectedCtrl
 
 let bool_type : sum_type =
   [
-    { name' = "False"; disc' = 0; field_type = None };
-    { name' = "True"; disc' = 1; field_type = None };
+    { name = "False"; disc = 0; field_type = None };
+    { name = "True"; disc = 1; field_type = None };
   ]
 
 let bool_from_bool b =
@@ -215,11 +209,13 @@ let rec exec_expr expr scopes =
                   | None -> raise (InvalidField accessor))
               | Type (Sum type') -> (
                   match
-                    List.find_opt (fun { name'; _ } -> name' = accessor) type'
+                    List.find_opt
+                      (fun ({ name; _ } : sum_variant_type) -> name = accessor)
+                      type'
                   with
-                  | Some { disc' = disc; field_type = None; _ } ->
+                  | Some { disc; field_type = None; _ } ->
                       None (SumVariant { type'; disc; field = None })
-                  | Some { disc' = disc; field_type = Some _; _ } ->
+                  | Some { disc; field_type = Some _; _ } ->
                       None
                         (Proc
                            (fun fields ->
@@ -292,7 +288,7 @@ let rec exec_expr expr scopes =
           map_ctrl_of
             (fun return_type_val ->
               let return_type = expect_type return_type_val in
-              None (Type (Proc' { arg_types; return_type })))
+              None (Type (Proc { arg_types; return_type })))
             return_type_ctrl)
         ctrl_of_arg_types
   | ProcT { return_type = None; _ } -> raise ProcTypeWithoutReturn
@@ -341,17 +337,16 @@ and exec_sum variants scopes =
       (fun ctrl ({ Parse.name; value } : Parse.sum_var) ->
         map_ctrl_of
           (fun variants ->
-            let disc' = Oo.id (object end) in
+            let disc = Oo.id (object end) in
             match value with
             | Some value ->
                 let field_type_ctrl = exec_expr value scopes in
                 map_ctrl_of
                   (fun field_type ->
                     let field_type = Some (expect_type field_type) in
-                    None (variants @ [ { name' = name; disc'; field_type } ]))
+                    None (variants @ [ { name; disc; field_type } ]))
                   field_type_ctrl
-            | None ->
-                None (variants @ [ { name' = name; disc'; field_type = None } ]))
+            | None -> None (variants @ [ { name; disc; field_type = None } ]))
           ctrl)
       (None []) variants
   in
@@ -403,25 +398,25 @@ and exec_arg_types args scopes =
                 {
                   kind;
                   name_or_count = Name name;
-                  type' = Some type_;
+                  type' = Some type';
                   value = None;
                 } -> (
                 let kind = Option.value kind ~default:prev_kind in
-                let ctrl = exec_expr type_ scopes in
+                let ctrl = exec_expr type' scopes in
                 let () =
                   match
                     List.find_opt
-                      (fun { name'' = existing_name; _ } ->
+                      (fun ({ name = existing_name; _ } : prod_field_type) ->
                         existing_name = name)
                       args
                   with
-                  | Some { name''; _ } -> raise (Redeclaration name'')
+                  | Some { name; _ } -> raise (Redeclaration name)
                   | None -> ()
                 in
                 match ctrl with
                 | None type_val ->
-                    let type'' = expect_type type_val in
-                    (kind, None (args @ [ { kind; name'' = name; type'' } ]))
+                    let type' = expect_type type_val in
+                    (kind, None (args @ [ { kind; name; type' } ]))
                 | Brk -> (kind, Brk)
                 | Ctn -> (kind, Ctn)
                 | Ret value -> (kind, Ret value))
@@ -539,9 +534,13 @@ let rec stringify value =
   | Rune r -> "'" ^ Char.escaped r ^ "'"
   | SumVariant { type'; disc; field } ->
       let name =
-        match List.find_opt (fun { disc'; _ } -> disc' = disc) type' with
+        match
+          List.find_opt
+            (fun ({ disc = disc'; _ } : sum_variant_type) -> disc' = disc)
+            type'
+        with
         | None -> raise Unreachable
-        | Some { name'; _ } -> name'
+        | Some { name; _ } -> name
       in
       let field_string =
         Option.map (fun field -> "(" ^ (stringify field |> indent) ^ ")") field
@@ -568,37 +567,37 @@ let rec stringify value =
   | Proc _ -> "proc(...) { ... }"
   | Type t -> (
       match t with
-      | Num' -> "Num"
-      | Rune' -> "Rune"
+      | Num -> "Num"
+      | Rune -> "Rune"
       | Sum [] -> "[]"
       | Sum variants ->
           let variant_strings =
             List.map
-              (fun { name'; field_type; _ } ->
+              (fun { name; field_type; _ } ->
                 let field_type_string =
                   Option.map
                     (fun field_type ->
                       "(" ^ (stringify (Type field_type) |> indent) ^ ")")
                     field_type
                 in
-                name' ^ Option.value field_type_string ~default:"" ^ ",")
+                name ^ Option.value field_type_string ~default:"" ^ ",")
               variants
           in
           let variants_string = String.concat "\n  " variant_strings in
           "[\n  " ^ variants_string ^ "\n]"
-      | Proc' { arg_types; return_type } ->
+      | Proc { arg_types; return_type } ->
           let arg_types_string =
             match arg_types with
             | [] -> "()"
             | _ ->
                 let arg_type_strings =
                   List.map
-                    (fun { kind; name''; type'' } ->
+                    (fun { kind; name; type' } ->
                       let kind_string =
                         match kind with Parse.Mut -> "mut" | Val -> "val"
                       in
-                      let type_string = stringify (Type type'') in
-                      kind_string ^ " " ^ name'' ^ ": " ^ type_string ^ ",")
+                      let type_string = stringify (Type type') in
+                      kind_string ^ " " ^ name ^ ": " ^ type_string ^ ",")
                     arg_types
                 in
                 "(\n  " ^ String.concat "\n  " arg_type_strings ^ "\n)"
@@ -629,8 +628,8 @@ let%expect_test _ =
        {
          type' =
            [
-             { name' = "Bar"; disc' = 0; field_type = None };
-             { name' = "Baz"; disc' = 9; field_type = Some Rune' };
+             { name = "Bar"; disc = 0; field_type = None };
+             { name = "Baz"; disc = 9; field_type = Some Rune };
            ];
          disc = 9;
          field = Some (Rune '\n');
@@ -701,11 +700,11 @@ let%expect_test _ =
   [%expect "proc(...) { ... }"]
 
 let%expect_test _ =
-  stringify (Type Num') |> print_endline;
+  stringify (Type Num) |> print_endline;
   [%expect "Num"]
 
 let%expect_test _ =
-  stringify (Type Rune') |> print_endline;
+  stringify (Type Rune) |> print_endline;
   [%expect "Rune"]
 
 let%expect_test _ =
@@ -713,7 +712,7 @@ let%expect_test _ =
   [%expect "[]"]
 
 let%expect_test _ =
-  stringify (Type (Sum [ { name' = "Foo"; disc' = 0; field_type = None } ]))
+  stringify (Type (Sum [ { name = "Foo"; disc = 0; field_type = None } ]))
   |> print_endline;
   [%expect {|
 [
@@ -722,8 +721,7 @@ let%expect_test _ =
 |}]
 
 let%expect_test _ =
-  stringify
-    (Type (Sum [ { name' = "Foo"; disc' = 0; field_type = Some Rune' } ]))
+  stringify (Type (Sum [ { name = "Foo"; disc = 0; field_type = Some Rune } ]))
   |> print_endline;
   [%expect {|
 [
@@ -736,9 +734,9 @@ let%expect_test _ =
     (Type
        (Sum
           [
-            { name' = "Foo"; disc' = 0; field_type = Some Rune' };
-            { name' = "Bar"; disc' = 1; field_type = None };
-            { name' = "Baz"; disc' = 2; field_type = Some Num' };
+            { name = "Foo"; disc = 0; field_type = Some Rune };
+            { name = "Bar"; disc = 1; field_type = None };
+            { name = "Baz"; disc = 2; field_type = Some Num };
           ]))
   |> print_endline;
   [%expect {|
@@ -750,16 +748,16 @@ let%expect_test _ =
 |}]
 
 let%expect_test _ =
-  stringify (Type (Proc' { arg_types = []; return_type = Rune' }))
+  stringify (Type (Proc { arg_types = []; return_type = Rune }))
   |> print_endline;
   [%expect "proc(): Rune"]
 
 let%expect_test _ =
   stringify
     (Type
-       (Proc'
+       (Proc
           {
-            arg_types = [ { kind = Parse.Val; name'' = "foo"; type'' = Num' } ];
+            arg_types = [ { kind = Parse.Val; name = "foo"; type' = Num } ];
             return_type = Sum [];
           }))
   |> print_endline;
@@ -772,12 +770,12 @@ let%expect_test _ =
 let%expect_test _ =
   stringify
     (Type
-       (Proc'
+       (Proc
           {
             arg_types =
               [
-                { kind = Parse.Val; name'' = "foo"; type'' = Num' };
-                { kind = Mut; name'' = "bar"; type'' = Rune' };
+                { kind = Parse.Val; name = "foo"; type' = Num };
+                { kind = Mut; name = "bar"; type' = Rune };
               ];
             return_type = Sum [];
           }))
@@ -810,8 +808,8 @@ let builtins =
   let builtins = StringMap.empty in
   let builtins = StringMap.add "False" (Val (bool_from_bool false)) builtins in
   let builtins = StringMap.add "True" (Val (bool_from_bool true)) builtins in
-  let builtins = StringMap.add "Num" (Val (Type Num')) builtins in
-  let builtins = StringMap.add "Rune" (Val (Type Rune')) builtins in
+  let builtins = StringMap.add "Num" (Val (Type Num)) builtins in
+  let builtins = StringMap.add "Rune" (Val (Type Rune)) builtins in
   StringMap.add "intrinsics" (Val (Prod intrinsics)) builtins
 
 let exec_ast ast =
@@ -1113,9 +1111,9 @@ let%test _ =
   | Type
       (Sum
         [
-          { name' = "Red"; field_type = None; _ };
-          { name' = "Green"; field_type = Some Num'; _ };
-          { name' = "Blue"; field_type = Some Rune'; _ };
+          { name = "Red"; field_type = None; _ };
+          { name = "Green"; field_type = Some Num; _ };
+          { name = "Blue"; field_type = Some Rune; _ };
         ]) ->
       true
   | _ -> false
@@ -1502,29 +1500,29 @@ let%test_unit _ =
 
 let%test _ =
   let ast = parse "proc(): Num" in
-  Type (Proc' { arg_types = []; return_type = Num' }) = exec_ast ast
+  Type (Proc { arg_types = []; return_type = Num }) = exec_ast ast
 
 let%test _ =
   let ast = parse "proc(foo: Num): Num" in
   Type
-    (Proc'
+    (Proc
        {
-         arg_types = [ { kind = Parse.Val; name'' = "foo"; type'' = Num' } ];
-         return_type = Num';
+         arg_types = [ { kind = Parse.Val; name = "foo"; type' = Num } ];
+         return_type = Num;
        })
   = exec_ast ast
 
 let%test _ =
   let ast = parse "proc(mut foo: Num, baz: Rune): Num" in
   Type
-    (Proc'
+    (Proc
        {
          arg_types =
            [
-             { kind = Parse.Mut; name'' = "foo"; type'' = Num' };
-             { kind = Mut; name'' = "baz"; type'' = Rune' };
+             { kind = Parse.Mut; name = "foo"; type' = Num };
+             { kind = Mut; name = "baz"; type' = Rune };
            ];
-         return_type = Num';
+         return_type = Num;
        })
   = exec_ast ast
 
