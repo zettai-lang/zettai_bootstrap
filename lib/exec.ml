@@ -111,8 +111,8 @@ exception UnexpectedCtrl
 
 let bool_type : sum_type =
   [
-    { name = "False"; disc = 0; field_type = None };
-    { name = "True"; disc = 1; field_type = None };
+    { name = "false"; disc = 0; field_type = None };
+    { name = "true"; disc = 1; field_type = None };
   ]
 
 let bool_from_bool b =
@@ -567,8 +567,8 @@ let rec stringify value =
   | Proc _ -> "proc(...) { ... }"
   | Type t -> (
       match t with
-      | Num -> "Num"
-      | Rune -> "Rune"
+      | Num -> "num"
+      | Rune -> "rune"
       | Sum [] -> "[]"
       | Sum variants ->
           let variant_strings =
@@ -620,7 +620,7 @@ let%expect_test _ =
 let%expect_test _ =
   stringify (SumVariant { type' = bool_type; disc = 1; field = None })
   |> print_endline;
-  [%expect "True"]
+  [%expect "true"]
 
 let%expect_test _ =
   stringify
@@ -701,11 +701,11 @@ let%expect_test _ =
 
 let%expect_test _ =
   stringify (Type Num) |> print_endline;
-  [%expect "Num"]
+  [%expect "num"]
 
 let%expect_test _ =
   stringify (Type Rune) |> print_endline;
-  [%expect "Rune"]
+  [%expect "rune"]
 
 let%expect_test _ =
   stringify (Type (Sum [])) |> print_endline;
@@ -725,7 +725,7 @@ let%expect_test _ =
   |> print_endline;
   [%expect {|
 [
-  Foo(Rune),
+  Foo(rune),
 ]
 |}]
 
@@ -741,16 +741,16 @@ let%expect_test _ =
   |> print_endline;
   [%expect {|
 [
-  Foo(Rune),
+  Foo(rune),
   Bar,
-  Baz(Num),
+  Baz(num),
 ]
 |}]
 
 let%expect_test _ =
   stringify (Type (Proc { arg_types = []; return_type = Rune }))
   |> print_endline;
-  [%expect "proc(): Rune"]
+  [%expect "proc(): rune"]
 
 let%expect_test _ =
   stringify
@@ -763,7 +763,7 @@ let%expect_test _ =
   |> print_endline;
   [%expect {|
   proc(
-    val foo: Num,
+    val foo: num,
   ): []
 |}]
 
@@ -782,8 +782,8 @@ let%expect_test _ =
   |> print_endline;
   [%expect {|
   proc(
-    val foo: Num,
-    mut bar: Rune,
+    val foo: num,
+    mut bar: rune,
   ): []
 |}]
 
@@ -806,10 +806,10 @@ let intrinsics =
 
 let builtins =
   let builtins = StringMap.empty in
-  let builtins = StringMap.add "False" (Val (bool_from_bool false)) builtins in
-  let builtins = StringMap.add "True" (Val (bool_from_bool true)) builtins in
-  let builtins = StringMap.add "Num" (Val (Type Num)) builtins in
-  let builtins = StringMap.add "Rune" (Val (Type Rune)) builtins in
+  let builtins = StringMap.add "false" (Val (bool_from_bool false)) builtins in
+  let builtins = StringMap.add "true" (Val (bool_from_bool true)) builtins in
+  let builtins = StringMap.add "num" (Val (Type Num)) builtins in
+  let builtins = StringMap.add "rune" (Val (Type Rune)) builtins in
   StringMap.add "intrinsics" (Val (Prod intrinsics)) builtins
 
 let exec_ast ast =
@@ -834,12 +834,12 @@ let%test _ =
   Num 14 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "5 == True" in
+  let ast = parse "5 == true" in
   let f () = exec_ast ast in
   assert_raises (InvalidBinopOperands (Num 5, bool_from_bool true)) f
 
 let%test_unit _ =
-  let ast = parse "False + True" in
+  let ast = parse "false + true" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
@@ -850,7 +850,7 @@ let%test _ =
   Num (-4) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False - True" in
+  let ast = parse "false - true" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
@@ -861,7 +861,7 @@ let%test _ =
   Num 45 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False * True" in
+  let ast = parse "false * true" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
@@ -872,7 +872,7 @@ let%test _ =
   Num 0 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False / True" in
+  let ast = parse "false / true" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
@@ -883,18 +883,18 @@ let%test _ =
   Num 5 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False % True" in
+  let ast = parse "false % true" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "True && False" in
+  let ast = parse "true && false" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "True && True" in
+  let ast = parse "true && true" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
@@ -903,15 +903,15 @@ let%test_unit _ =
   assert_raises (InvalidBinopOperands (Num 5, Num 9)) f
 
 let%test _ =
-  let ast = parse "False || True" in
+  let ast = parse "false || true" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "True || False" in
+  let ast = parse "true || false" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "False || False" in
+  let ast = parse "false || false" in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
@@ -920,11 +920,11 @@ let%test_unit _ =
   assert_raises (InvalidBinopOperands (Num 5, Num 9)) f
 
 let%test _ =
-  let ast = parse "!False" in
+  let ast = parse "!false" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "!True" in
+  let ast = parse "!true" in
   bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
@@ -937,16 +937,16 @@ let%test _ =
   Num (-5) = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "-False" in
+  let ast = parse "-false" in
   let f () = exec_ast ast in
   assert_raises (InvalidUnaryOperand (bool_from_bool false)) f
 
 let%test _ =
-  let ast = parse "False == True" in
+  let ast = parse "false == true" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast = parse "True == True" in
+  let ast = parse "true == true" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
@@ -966,11 +966,11 @@ let%test _ =
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "False != True" in
+  let ast = parse "false != true" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "True != True" in
+  let ast = parse "true != true" in
   bool_from_bool false = exec_ast ast
 
 let%test _ =
@@ -1006,7 +1006,7 @@ let%test _ =
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False <= True" in
+  let ast = parse "false <= true" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
@@ -1029,22 +1029,22 @@ let%test _ =
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "False < True" in
+  let ast = parse "false < true" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
     f
 
 let%test _ =
-  let ast = parse "if True then 5 else 9" in
+  let ast = parse "if true then 5 else 9" in
   Num 5 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if False then 5 else 9" in
+  let ast = parse "if false then 5 else 9" in
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "if False then 5" in
+  let ast = parse "if false then 5" in
   unit_val = exec_ast ast
 
 let%test_unit _ =
@@ -1066,7 +1066,7 @@ let%test_unit _ =
   assert_raises (Redeclaration "i") f
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True)" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true)" in
   Prod
     [
       { name = "i"; entry = Val (Num 9) };
@@ -1080,15 +1080,15 @@ let%test _ =
   Num 9 = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).j" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true).j" in
   Rune 'a' = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
   bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = True).k" in
+  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
   bool_from_bool true = exec_ast ast
 
 let%test_unit _ =
@@ -1106,7 +1106,7 @@ let%test _ =
   match exec_ast ast with Type (Sum []) -> true | _ -> false
 
 let%test _ =
-  let ast = parse "[Red, Green(Num), Blue(Rune)]" in
+  let ast = parse "[Red, Green(num), Blue(rune)]" in
   match exec_ast ast with
   | Type
       (Sum
@@ -1123,13 +1123,13 @@ let%test _ =
   match exec_ast ast with SumVariant { field = None; _ } -> true | _ -> false
 
 let%test _ =
-  let ast = parse "[Green(Num)].Green(value = 5)" in
+  let ast = parse "[Green(num)].Green(value = 5)" in
   match exec_ast ast with
   | SumVariant { field = Some (Num 5); _ } -> true
   | _ -> false
 
 let%test_unit _ =
-  let ast = parse "[Green(Num)].Green(foo = 5)" in
+  let ast = parse "[Green(num)].Green(foo = 5)" in
   let f () = exec_ast ast in
   assert_raises
     (InvalidCallArgs ([ "value" ], [ { name = "foo"; entry = Val (Num 5) } ]))
@@ -1165,7 +1165,7 @@ let%test _ =
     parse
       {|
     proc() {
-      val sum = [Red, Green(Num), Blue]
+      val sum = [Red, Green(num), Blue]
       ret sum.Green(value = 5) == sum.Green(value = 5)
     }()
   |}
@@ -1177,7 +1177,7 @@ let%test _ =
     parse
       {|
     proc() {
-      val sum = [Red, Green(Num), Blue]
+      val sum = [Red, Green(num), Blue]
       ret sum.Green(value = 5) == sum.Green(value = 9)
     }()
   |}
@@ -1189,7 +1189,7 @@ let%test _ =
     parse
       {|
     proc() {
-      val sum = [Red, Green(Num), Blue(Num)]
+      val sum = [Red, Green(num), Blue(num)]
       ret sum.Green(value = 5) == sum.Blue(value = 5)
     }()
   |}
@@ -1295,20 +1295,20 @@ let%test _ =
       {|
     {
       proc() {
-        mut b = False
+        mut b = false
         loop {
           if b then {
             brk
           }
 
-          b = True
+          b = true
 
           ctn
 
-          ret False
+          ret false
         }
 
-        ret True
+        ret true
       }
     }()
   |}
@@ -1325,7 +1325,7 @@ let%test _ =
       {|
     {
       proc() {
-        if { if True then { ret 9 } else True } then {
+        if { if true then { ret 9 } else true } then {
           ret 3
         }
 
@@ -1499,11 +1499,11 @@ let%test_unit _ =
   assert_raises (InvalidAccessee (Num 1)) f
 
 let%test _ =
-  let ast = parse "proc(): Num" in
+  let ast = parse "proc(): num" in
   Type (Proc { arg_types = []; return_type = Num }) = exec_ast ast
 
 let%test _ =
-  let ast = parse "proc(foo: Num): Num" in
+  let ast = parse "proc(foo: num): num" in
   Type
     (Proc
        {
@@ -1513,7 +1513,7 @@ let%test _ =
   = exec_ast ast
 
 let%test _ =
-  let ast = parse "proc(mut foo: Num, baz: Rune): Num" in
+  let ast = parse "proc(mut foo: num, baz: rune): num" in
   Type
     (Proc
        {
@@ -1527,11 +1527,11 @@ let%test _ =
   = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "proc(i: Num, i: Num): Num" in
+  let ast = parse "proc(i: num, i: num): num" in
   let f () = exec_ast ast in
   assert_raises (Redeclaration "i") f
 
 let%test_unit _ =
-  let ast = parse "proc(i: Num)" in
+  let ast = parse "proc(i: num)" in
   let f () = exec_ast ast in
   assert_raises ProcTypeWithoutReturn f
