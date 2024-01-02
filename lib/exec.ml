@@ -56,14 +56,18 @@ let expect_type = function
 
 let unit_val = Prod []
 
-type 'a ctrl_of = Brk | Ctn | Ret of value option | None of 'a
+type 'a ctrl = Brk | Ctn | Ret of value option | None of 'a
 
-let map_ctrl_of ctrl f =
+let return a = None a
+
+let ( >>= ) ctrl f =
   match ctrl with
   | Brk -> Brk
   | Ctn -> Ctn
   | Ret value -> Ret value
   | None a -> f a
+
+let ( let* ) = ( >>= )
 
 exception NumAsArgumentName
 
@@ -162,23 +166,24 @@ let rec exec_expr expr scopes =
   match expr with
   | Parse.Lit lit -> begin
       match lit with
-      | Num n -> None (Num n)
-      | Rune r -> None (Rune r)
+      | Num n -> return (Num n)
+      | Rune r -> return (Rune r)
       | String _s -> raise TODO
     end
   | Id i ->
       let entry_opt = List.find_map (( ! ) >> StringMap.find_opt i) scopes in
       let entry = get_or_else entry_opt @@ fun () -> raise (UnboundIdent i) in
-      None (value_of_scope_entry i entry)
+      return (value_of_scope_entry i entry)
   | Uop (uop, operand) -> begin
       match uop with
       | Not ->
           exec_uop operand (function
-            | SumVariant variant when is_bool variant -> None (bool_not variant)
+            | SumVariant variant when is_bool variant ->
+                return (bool_not variant)
             | invalid -> raise (InvalidUnaryOperand invalid))
       | UnaryMins ->
           exec_uop operand (function
-            | Num n -> None (Num (-n))
+            | Num n -> return (Num (-n))
             | invalid -> raise (InvalidUnaryOperand invalid))
     end
   | Binop (lhs, binop, rhs) -> begin
@@ -204,60 +209,62 @@ let rec exec_expr expr scopes =
               | Num n1, Num n2 -> bool_from_bool (n1 < n2)
               | Rune r1, Rune r2 -> bool_from_bool (r1 < r2)
               | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
-      | Dot ->
+      | Dot -> (
           let accessor =
             match rhs with Id i -> i | _ -> raise (InvalidAccessor rhs)
           in
-          let ctrl = exec_expr lhs scopes in
-          map_ctrl_of ctrl (function
-            | Prod fields -> (
-                match
-                  List.find_opt (fun { name; _ } -> name = Some accessor) fields
-                with
-                | Some { entry; _ } ->
-                    None (value_of_scope_entry accessor entry)
-                | None -> raise (InvalidField accessor))
-            | Type (Sum type') -> (
-                match
-                  List.find_opt
-                    (fun ({ name; _ } : sum_variant_type) -> name = accessor)
-                    type'
-                with
-                | Some { disc; field_type = None; _ } ->
-                    None (SumVariant { type'; disc; field = None })
-                | Some { disc; field_type = Some _; _ } ->
-                    None
-                      (Proc
-                         (fun fields ->
-                           match fields with
-                           | [ { name = None | Some "value"; entry } ] ->
-                               let value = value_of_scope_entry "value" entry in
-                               SumVariant { type'; disc; field = Some value }
-                           | _ -> raise (InvalidCallArgs ([ "value" ], fields))))
-                | None -> raise (InvalidField accessor))
-            | invalid -> raise (InvalidAccessee invalid))
+          let* ctrl = exec_expr lhs scopes in
+          match ctrl with
+          | Prod fields -> begin
+              match
+                List.find_opt (fun { name; _ } -> name = Some accessor) fields
+              with
+              | Some { entry; _ } ->
+                  return (value_of_scope_entry accessor entry)
+              | None -> raise (InvalidField accessor)
+            end
+          | Type (Sum type') -> (
+              match
+                List.find_opt
+                  (fun ({ name; _ } : sum_variant_type) -> name = accessor)
+                  type'
+              with
+              | Some { disc; field_type = None; _ } ->
+                  return (SumVariant { type'; disc; field = None })
+              | Some { disc; field_type = Some _; _ } ->
+                  return
+                    (Proc
+                       (fun fields ->
+                         match fields with
+                         | [ { name = None | Some "value"; entry } ] ->
+                             let value = value_of_scope_entry "value" entry in
+                             SumVariant { type'; disc; field = Some value }
+                         | _ -> raise (InvalidCallArgs ([ "value" ], fields))))
+              | None -> raise (InvalidField accessor))
+          | invalid -> raise (InvalidAccessee invalid))
     end
-  | If { cond; if_branch; else_branch } ->
-      let ctrl = exec_expr cond scopes in
-      map_ctrl_of ctrl (function
-        | SumVariant variant
-          when is_bool variant && variant.disc = bool_type_disc_true ->
-            exec_expr if_branch scopes
-        | SumVariant variant
-          when is_bool variant && variant.disc = bool_type_disc_false -> begin
-            match else_branch with
-            | Some else_branch -> exec_expr else_branch scopes
-            | None -> None unit_val
-          end
-        | cond -> raise (InvalidIfCond cond))
+  | If { cond; if_branch; else_branch } -> begin
+      let* ctrl = exec_expr cond scopes in
+      match ctrl with
+      | SumVariant variant
+        when is_bool variant && variant.disc = bool_type_disc_true ->
+          exec_expr if_branch scopes
+      | SumVariant variant
+        when is_bool variant && variant.disc = bool_type_disc_false -> begin
+          match else_branch with
+          | Some else_branch -> exec_expr else_branch scopes
+          | None -> return unit_val
+        end
+      | cond -> raise (InvalidIfCond cond)
+    end
   | Sum variants -> exec_sum variants scopes
   | Prod fields ->
-      let ctrl_of_fields = exec_prod fields scopes in
-      map_ctrl_of ctrl_of_fields (fun fields -> None (Prod fields))
+      let* fields = exec_prod fields scopes in
+      return (Prod fields)
   | Block stmts -> exec_block scopes stmts
   | Proc { type' = { args; _ }; body } ->
       let expected = args_names args in
-      None
+      return
         (Proc
            (fun fields ->
              let field_pairs =
@@ -283,27 +290,24 @@ let rec exec_expr expr scopes =
              | Brk | Ctn -> raise UnexpectedCtrl
              | Ret value -> Option.value value ~default:unit_val))
   | ProcT { args; return_type = Some return_type } ->
-      let ctrl_of_arg_types = exec_arg_types args scopes in
-      map_ctrl_of ctrl_of_arg_types (fun arg_types ->
-          let return_type_ctrl = exec_expr return_type scopes in
-          map_ctrl_of return_type_ctrl (fun return_type_val ->
-              let return_type = expect_type return_type_val in
-              None (Type (Proc { arg_types; return_type }))))
+      let* arg_types = exec_arg_types args scopes in
+      let* return_type_val = exec_expr return_type scopes in
+      let return_type = expect_type return_type_val in
+      return (Type (Proc { arg_types; return_type }))
   | ProcT { return_type = None; _ } -> raise ProcTypeWithoutReturn
   | Call { callee; args } -> begin
-      let ctrl = exec_expr callee scopes in
-      map_ctrl_of ctrl @@ function
+      let* callee = exec_expr callee scopes in
+      match callee with
       | Proc f ->
-          let ctrl = exec_prod args scopes in
-          map_ctrl_of ctrl @@ fun fields -> None (f fields)
+          let* args = exec_prod args scopes in
+          return (f args)
       | invalid -> raise (InvalidCallee invalid)
     end
 
 and exec_binop scopes lhs rhs op =
-  let ctrl = exec_expr lhs scopes in
-  map_ctrl_of ctrl @@ fun lhs ->
-  let ctrl = exec_expr rhs scopes in
-  map_ctrl_of ctrl @@ fun rhs -> None (op (lhs, rhs))
+  let* lhs = exec_expr lhs scopes in
+  let* rhs = exec_expr rhs scopes in
+  return (op (lhs, rhs))
 
 and exec_num_binop scopes lhs rhs op =
   exec_binop scopes lhs rhs @@ function
@@ -318,26 +322,21 @@ and exec_bool_binop scopes lhs rhs op =
       bool_from_bool (op d1 d2)
   | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs))
 
-and exec_uop scopes operand op =
-  let ctrl = exec_expr operand scopes in
-  map_ctrl_of ctrl op
+and exec_uop scopes operand op = exec_expr operand scopes >>= op
 
 and exec_sum variants scopes =
-  let ctrl_of_variants =
-    List.fold_left
-      (fun ctrl ({ name; value } : Parse.sum_var) ->
-        map_ctrl_of ctrl @@ fun variants ->
-        let disc = Oo.id (object end) in
-        match value with
-        | Some value ->
-            let field_type_ctrl = exec_expr value scopes in
-            map_ctrl_of field_type_ctrl @@ fun field_type ->
-            let field_type = Some (expect_type field_type) in
-            None (variants @ [ { name; disc; field_type } ])
-        | None -> None (variants @ [ { name; disc; field_type = None } ]))
-      (None []) variants
-  in
-  map_ctrl_of ctrl_of_variants @@ fun variants -> None (Type (Sum variants))
+  List.fold_left
+    (fun ctrl ({ name; value } : Parse.sum_var) ->
+      let* variants = ctrl in
+      let disc = Oo.id (object end) in
+      match value with
+      | Some value ->
+          let* field_type = exec_expr value scopes in
+          let field_type = Some (expect_type field_type) in
+          return (variants @ [ { name; disc; field_type } ])
+      | None -> return (variants @ [ { name; disc; field_type = None } ]))
+    (return []) variants
+  >>= fun variants -> return (Type (Sum variants))
 
 and exec_prod fields scopes =
   List.fold_left
@@ -362,7 +361,7 @@ and exec_prod fields scopes =
               | None value ->
                   let name = Some name in
                   let entry = scope_entry value kind in
-                  (kind, None (fields @ [ { name; entry } ]))
+                  (kind, return (fields @ [ { name; entry } ]))
               | Brk -> (kind, Brk)
               | Ctn -> (kind, Ctn)
               | Ret value -> (kind, Ret value)
@@ -373,7 +372,7 @@ and exec_prod fields scopes =
               | None value ->
                   let name = Option.None in
                   let entry = scope_entry value prev_kind in
-                  (prev_kind, None (fields @ [ { name; entry } ]))
+                  (prev_kind, return (fields @ [ { name; entry } ]))
               | Brk -> (prev_kind, Brk)
               | Ctn -> (prev_kind, Ctn)
               | Ret value -> (prev_kind, Ret value))
@@ -382,7 +381,8 @@ and exec_prod fields scopes =
       | Brk -> (prev_kind, Brk)
       | Ctn -> (prev_kind, Ctn)
       | Ret value -> (prev_kind, Ret value))
-    (Parse.Val, None []) fields
+    (Parse.Val, return [])
+    fields
   |> snd
 
 and exec_arg_types args scopes =
@@ -413,7 +413,7 @@ and exec_arg_types args scopes =
               match ctrl with
               | None type_val ->
                   let type' = expect_type type_val in
-                  (kind, None (args @ [ { kind; name; type' } ]))
+                  (kind, return (args @ [ { kind; name; type' } ]))
               | Brk -> (kind, Brk)
               | Ctn -> (kind, Ctn)
               | Ret value -> (kind, Ret value))
@@ -422,24 +422,25 @@ and exec_arg_types args scopes =
       | Brk -> (prev_kind, Brk)
       | Ctn -> (prev_kind, Ctn)
       | Ret value -> (prev_kind, Ret value))
-    (Parse.Val, None []) args
+    (Parse.Val, return [])
+    args
   |> snd
 
 and exec_block scopes = function
   | [ Expr expr ] -> exec_expr expr (ref StringMap.empty :: scopes)
   | [ stmt ] ->
-      let ctrl = exec_stmt stmt (ref StringMap.empty :: scopes) in
-      map_ctrl_of ctrl @@ fun () -> None unit_val
+      let* _ = exec_stmt stmt (ref StringMap.empty :: scopes) in
+      return unit_val
   | stmts ->
-      let ctrl = exec_nonsingle_block stmts (ref StringMap.empty :: scopes) in
-      map_ctrl_of ctrl @@ fun () -> None unit_val
+      let* _ = exec_nonsingle_block stmts (ref StringMap.empty :: scopes) in
+      return unit_val
 
 and exec_nonsingle_block stmts scopes =
   match stmts with
   | stmt :: stmts ->
-      let ctrl = exec_stmt stmt scopes in
-      map_ctrl_of ctrl @@ fun () -> exec_nonsingle_block stmts scopes
-  | [] -> None ()
+      let* _ = exec_stmt stmt scopes in
+      exec_nonsingle_block stmts scopes
+  | [] -> return ()
 
 (* scopes must be non-empty. *)
 and exec_stmt stmt scopes =
@@ -449,15 +450,14 @@ and exec_stmt stmt scopes =
   | Ret value -> begin
       match value with
       | Some value ->
-          let ctrl = exec_expr value scopes in
-          map_ctrl_of ctrl @@ fun value -> Ret (Some value)
+          let* value = exec_expr value scopes in
+          Ret (Some value)
       | None -> Ret None
     end
   | Decl { kind; name; value; _ } -> begin
       match (kind, value) with
       | _, Some value ->
-          let ctrl = exec_expr value scopes in
-          map_ctrl_of ctrl @@ fun value ->
+          let* value = exec_expr value scopes in
           let entry = scope_entry value kind in
           let scope = List.hd scopes in
           let () =
@@ -466,7 +466,7 @@ and exec_stmt stmt scopes =
             | None -> ()
           in
           scope := StringMap.add name entry !scope;
-          None ()
+          return ()
       | Mut, None ->
           let scope = List.hd scopes in
           let () =
@@ -475,17 +475,16 @@ and exec_stmt stmt scopes =
             | None -> ()
           in
           scope := StringMap.add name (Mut (ref Option.None)) !scope;
-          None ()
+          return ()
       | Val, None -> raise (UninitializedVal name)
     end
   | Assign { assignee; value } -> begin
       let try_scope_entry_assign name assignee' scopes =
         match assignee' with
         | Mut value_ref ->
-            let ctrl = exec_expr value scopes in
-            map_ctrl_of ctrl @@ fun value ->
+            let* value = exec_expr value scopes in
             value_ref := Some value;
-            None ()
+            return ()
         | _ -> raise (ImmutableAssign name)
       in
       match assignee with
@@ -496,28 +495,29 @@ and exec_stmt stmt scopes =
           | Some assignee -> try_scope_entry_assign i assignee scopes
           | None -> raise (UnboundIdent i)
         end
-      | Binop (accessee, Dot, Id accessor) ->
-          let ctrl = exec_expr accessee scopes in
-          map_ctrl_of ctrl (function
-            | Prod fields -> begin
-                match
-                  List.find_opt (fun { name; _ } -> name = Some accessor) fields
-                with
-                | Some { entry; _ } ->
-                    try_scope_entry_assign accessor entry scopes
-                | None -> raise (InvalidField accessor)
-              end
-            | invalid -> raise (InvalidAccessee invalid))
+      | Binop (accessee, Dot, Id accessor) -> begin
+          let* accessee = exec_expr accessee scopes in
+          match accessee with
+          | Prod fields -> begin
+              match
+                List.find_opt (fun { name; _ } -> name = Some accessor) fields
+              with
+              | Some { entry; _ } ->
+                  try_scope_entry_assign accessor entry scopes
+              | None -> raise (InvalidField accessor)
+            end
+          | invalid -> raise (InvalidAccessee invalid)
+        end
       | _ -> raise TODO
     end
   | Loop body -> exec_loop body scopes
   | Expr expr ->
-      let value = exec_expr expr scopes in
-      map_ctrl_of value @@ fun _ -> None ()
+      let* _ = exec_expr expr scopes in
+      return ()
 
 and exec_loop body scopes =
   match exec_expr body scopes with
-  | Brk -> None ()
+  | Brk -> return ()
   | Ret value -> Ret value
   | _ -> exec_loop body scopes
 
