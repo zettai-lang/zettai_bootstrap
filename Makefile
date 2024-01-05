@@ -10,7 +10,9 @@ test:
 
 .PHONY: test-coverage
 test-coverage:
-	scripts/test-coverage.sh
+	dune runtest --force --instrument-with bisect_ppx
+	bisect-ppx-report html
+	bisect-ppx-report summary
 
 .PHONY: functest
 functest:
