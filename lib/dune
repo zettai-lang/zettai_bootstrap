@@ -6,7 +6,7 @@
 (library
  (name zettai_bootstrap)
  (public_name zettai_bootstrap)
- (libraries angstrom core ounit2)
+ (libraries core ounit2 starpath)
  (instrumentation
   (backend bisect_ppx))
  (inline_tests)

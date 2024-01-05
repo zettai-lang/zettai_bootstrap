@@ -4,9 +4,16 @@
   inputs = {
     nixpkgs.url = "nixpkgs/nixpkgs-unstable";
     utils.url = "github:numtide/flake-utils";
+    starpath = {
+      url = "github:mtoohey31/starpath?dir=nix";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        utils.follows = "utils";
+      };
+    };
   };
 
-  outputs = { self, nixpkgs, utils }: {
+  outputs = { self, nixpkgs, utils, ... }@inputs: {
     overlays.default = final: _: {
       zettai_bootstrap = final.ocamlPackages.buildDunePackage rec {
         pname = "zettai_bootstrap";
@@ -17,10 +24,10 @@
 
         checkInputs = buildInputs ++ [ final.ocamlPackages.ppx_inline_test ];
         buildInputs = with final.ocamlPackages; [
-          angstrom
           core
           ounit2
           ppx_deriving
+          starpath
         ];
 
         src = builtins.path { path = ./..; name = "zettai_bootstrap-src"; };
@@ -29,19 +36,18 @@
   } // utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs {
-        overlays = [ self.overlays.default ];
+        overlays = [ inputs.starpath.overlays.default self.overlays.default ];
         inherit system;
       };
       inherit (pkgs) zettai_bootstrap mkShell ocamlformat ocamlPackages;
-      inherit (ocamlPackages) angstrom bisect_ppx core dune_3 findlib ocaml
-        ocaml-lsp ounit2 ppx_assert ppx_deriving ppx_inline_test;
+      inherit (ocamlPackages) bisect_ppx core dune_3 findlib ocaml ocaml-lsp
+        ounit2 ppx_assert ppx_deriving ppx_inline_test starpath;
     in
     {
       packages.default = zettai_bootstrap;
 
       devShells.default = mkShell {
         packages = [
-          angstrom
           bisect_ppx
           core
           dune_3
@@ -53,6 +59,7 @@
           ppx_assert
           ppx_deriving
           ppx_inline_test
+          starpath
         ];
       };
     });
