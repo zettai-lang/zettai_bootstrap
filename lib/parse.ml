@@ -96,8 +96,8 @@ let reserved =
   [ "if"; "then"; "else"; "mut"; "val"; "loop"; "proc"; "brk"; "ctn"; "ret" ]
 
 let id =
-  let& start, pos = satisfy ~expected:[ "[a-zA-Z_]" ] is_id_start in
-  let= rest = take_while is_id_cont in
+  let* pos, start = satisfy ~expected:[ "[a-zA-Z_]" ] is_id_start |> pos in
+  let* rest = take_while is_id_cont in
   let id = String.make 1 start ^ implode rest in
   if List.exists (( = ) id) reserved then
     fail
@@ -112,9 +112,9 @@ let is_space = function ' ' | '\t' | '\r' | '\n' -> true | _ -> false
 let skip_space = skip_while is_space
 
 let keyword s =
-  let= tp = string s *> peek in
+  let* tp = string s *> peek |> pos in
   match tp with
-  | Some (t, pos) when is_id_cont t ->
+  | pos, Some t when is_id_cont t ->
       fail
         {
           pos;
@@ -125,10 +125,10 @@ let keyword s =
 
 let if' expr =
   keyword "if" *> skip_space
-  *> let= cond = expr in
+  *> let* cond = expr in
      skip_space *> keyword "then" *> skip_space
-     *> let= if_branch = expr in
-        let= else_branch =
+     *> let* if_branch = expr in
+        let* else_branch =
           optional (skip_space *> keyword "else" *> skip_space *> expr)
         in
         return (cond, if_branch, else_branch)
@@ -140,18 +140,18 @@ let golike_sep_by sep e =
   skip_space
   *> optional
        (fix (fun golike_sep_by ->
-            let= e1 = e in
+            let* e1 = e in
             optional
               (skip_space *> sep *> skip_space
-              *> let| rest = optional golike_sep_by in
+              *> let+ rest = optional golike_sep_by in
                  e1 :: Option.value ~default:[] rest)
             >>| Option.value ~default:[ e1 ]))
   >>| Option.value ~default:[] <* skip_horiz_space
 
 let sum expr =
   let sum_var =
-    let= name = id in
-    let= value =
+    let* name = id in
+    let* value =
       optional (skip_space *> token '(' *> optional expr <* token ')')
     in
     let value = Option.value ~default:None value in
@@ -163,12 +163,12 @@ let kind = keyword "mut" *> return Mut <|> keyword "val" *> return Val
 
 let prod expr =
   let prod_field =
-    (let= kind = optional (kind <* skip_space) in
-     let= name_or_count =
+    (let* kind = optional (kind <* skip_space) in
+     let* name_or_count =
        id >>| (fun s -> Name s) <|> (num >>| fun n -> Count n)
      in
-     let= type' = optional (skip_space *> token ':' *> skip_space *> expr) in
-     let= value = optional (skip_space *> token '=' *> skip_space *> expr) in
+     let* type' = optional (skip_space *> token ':' *> skip_space *> expr) in
+     let* value = optional (skip_space *> token '=' *> skip_space *> expr) in
      if Option.is_some kind || Option.is_some type' || Option.is_some value then
        return (Decl { kind; name_or_count; type'; value })
      else
@@ -182,17 +182,17 @@ let prod expr =
   token '(' *> golike_sep_by (token ',') prod_field <* token ')'
 
 let decl expr =
-  let= kind = kind in
+  let* kind = kind in
   skip_space
-  *> let= name = id in
-     let= type' = optional (skip_space *> token ':' *> skip_space *> expr) in
-     let= value = optional (skip_space *> token '=' *> skip_space *> expr) in
+  *> let* name = id in
+     let* type' = optional (skip_space *> token ':' *> skip_space *> expr) in
+     let* value = optional (skip_space *> token '=' *> skip_space *> expr) in
      return { kind; name; type'; value }
 
 let assign expr =
-  let= assignee = expr in
+  let* assignee = expr in
   skip_space *> token '=' *> skip_space
-  *> let= value = expr in
+  *> let* value = expr in
      return { assignee; value }
 
 let loop expr = keyword "loop" *> skip_space *> expr
@@ -216,16 +216,16 @@ let block expr =
 
 let proc_t expr =
   keyword "proc" *> skip_space
-  *> let= args = prod expr in
-     let= return_type =
+  *> let* args = prod expr in
+     let* return_type =
        optional (skip_space *> token ':' *> skip_space *> expr)
      in
      return { args; return_type }
 
 let proc expr =
-  let= type' = proc_t expr in
+  let* type' = proc_t expr in
   skip_space
-  *> let= body = block expr in
+  *> let* body = block expr in
      return { type'; body }
 
 let expr =
@@ -243,36 +243,36 @@ let expr =
         <|> (proc_t expr >>| fun proc_t -> ProcT proc_t)
       in
       let dot_expr =
-        let= accessee = prim_expr in
-        let= accessors = repeat (skip_space *> token '.' *> skip_space *> id) in
+        let* accessee = prim_expr in
+        let* accessors = repeat (skip_space *> token '.' *> skip_space *> id) in
         return
           (List.fold_left
              (fun accessee accessor -> Binop (accessee, Dot, Id accessor))
              accessee accessors)
       in
       let call_expr =
-        let= callee = dot_expr in
-        let= argss = repeat (skip_space *> prod expr) in
+        let* callee = dot_expr in
+        let* argss = repeat (skip_space *> prod expr) in
         return
           (List.fold_left
              (fun callee args -> Call { callee; args })
              callee argss)
       in
       let uop_expr =
-        let= uops =
+        let* uops =
           repeat
             (token '!' *> return Not
             <|> token '-' *> return UnaryMins
             <* skip_space)
         in
-        let= expr = call_expr in
+        let* expr = call_expr in
         return (List.fold_left (fun expr uop -> Uop (uop, expr)) expr uops)
       in
-      let= lhs1 = uop_expr in
-      let= rest =
+      let* lhs1 = uop_expr in
+      let* rest =
         repeat
           (skip_space
-          *> let= binop =
+          *> let* binop =
                token '+' *> return Plus
                <|> token '-' *> return Mins
                <|> token '*' *> return Astr
@@ -286,7 +286,7 @@ let expr =
                <|> token '<' *> return Lt
              in
              skip_space
-             *> let= rhs = uop_expr in
+             *> let* rhs = uop_expr in
                 return (binop, rhs))
       in
       return
