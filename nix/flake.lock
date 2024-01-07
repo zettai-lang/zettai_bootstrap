@@ -33,11 +33,11 @@
       },
       "locked": {
         "dir": "nix",
-        "lastModified": 1704597607,
-        "narHash": "sha256-z4Om3OI8u0jWqnj3r9Lqpyl7gSoQrD1qvHjAAekg+Cc=",
+        "lastModified": 1704580561,
+        "narHash": "sha256-7I+6tMUFLNOsqiM7JiWCyhPSoa7BCHQafqfzDsvsI1A=",
         "owner": "mtoohey31",
         "repo": "starpath",
-        "rev": "d22adb458019d5fffa7132ce51f37677677ac2a1",
+        "rev": "abc488efa911a8608e4967748985783794584911",
         "type": "github"
       },
       "original": {
