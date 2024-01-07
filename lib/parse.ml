@@ -67,108 +67,80 @@ and call = { callee : expr; args : prod_field list }
 
 type ast = expr [@@deriving show]
 
-(* TODO: Convert to separate lex+parse steps to improve error readability. *)
 (* TODO: Embed positions in ast only where applicable for errors. *)
 
-open Starpath.StringCombinators
+module TokenToken = struct
+  include Starpath.CharToken
+
+  type t = Lex.token
+
+  let string_of_token = Lex.string_of_token
+end
+
+open Starpath.Make (TokenToken)
 open Util
 
-let implode = List.to_seq >> String.of_seq
-let is_digit = function '0' .. '9' -> true | _ -> false
-
-let num =
-  take_while1 ~expected:[ "number" ] is_digit >>| (implode >> int_of_string)
-
-let rune = token '\'' *> token_not '\'' <* token '\''
-let string' = token '"' *> take_while (( <> ) '"') <* token '"'
+let num = satisfy_map ~expected:[ Lex.num_expected ] Lex.num_val
+let rune = satisfy_map ~expected:[ Lex.rune_expected ] Lex.rune_val
+let string = satisfy_map ~expected:[ Lex.string_expected ] Lex.string_val
 
 let lit =
   num
   >>| (fun n -> Num n)
   <|> (rune >>| fun c -> Rune c)
-  <|> (string' >>| fun s -> String (implode s))
+  <|> (string >>| fun s -> String s)
 
-let is_alpha = function 'a' .. 'z' | 'A' .. 'Z' -> true | _ -> false
-let is_id_start c = is_alpha c || c == '_'
-let is_id_cont c = is_id_start c || is_digit c
+let id = satisfy_map ~expected:[ Lex.id_expected ] Lex.id_val
+let skip_nls = skip_while Lex.is_nl
 
-let reserved =
-  [ "if"; "then"; "else"; "mut"; "val"; "loop"; "proc"; "brk"; "ctn"; "ret" ]
-
-let id =
-  let* pos, start = satisfy ~expected:[ "[a-zA-Z_]" ] is_id_start |> pos in
-  let* rest = take_while is_id_cont in
-  let id = String.make 1 start ^ implode rest in
-  if List.exists (( = ) id) reserved then
-    fail
-      {
-        pos;
-        expected = [ "identifier" ];
-        actual = "reserved keyword: \"" ^ String.escaped id ^ "\"";
-      }
-  else return id
-
-let is_space = function ' ' | '\t' | '\r' | '\n' -> true | _ -> false
-let skip_space = skip_while is_space
-
-let keyword s =
-  let* tp = string s *> peek |> pos in
-  match tp with
-  | pos, Some t when is_id_cont t ->
-      fail
-        {
-          pos;
-          expected = [ "[^a-zA-Z0-9_]" ];
-          actual = "'" ^ Char.escaped t ^ "'";
-        }
-  | _ -> return s
+let keyword k =
+  satisfy
+    ~expected:[ quoted (Lex.string_of_keyword k) ]
+    (function Keyword k' when k = k' -> true | _ -> false)
 
 let if' expr =
-  keyword "if" *> skip_space
+  keyword If *> skip_nls
   *> let* cond = expr in
-     skip_space *> keyword "then" *> skip_space
+     skip_nls *> keyword Then *> skip_nls
      *> let* if_branch = expr in
         let* else_branch =
-          optional (skip_space *> keyword "else" *> skip_space *> expr)
+          optional (skip_nls *> keyword Else *> skip_nls *> expr)
         in
         return (cond, if_branch, else_branch)
 
-let is_horiz_space = function ' ' | '\t' -> true | _ -> false
-let skip_horiz_space = skip_while is_horiz_space
-
 let golike_sep_by sep e =
-  skip_space
+  skip_nls
   *> optional
        (fix (fun golike_sep_by ->
             let* e1 = e in
             optional
-              (skip_space *> sep *> skip_space
+              (skip_nls *> sep *> skip_nls
               *> let+ rest = optional golike_sep_by in
                  e1 :: Option.value ~default:[] rest)
             >>| Option.value ~default:[ e1 ]))
-  >>| Option.value ~default:[] <* skip_horiz_space
+  >>| Option.value ~default:[]
 
 let sum expr =
   let sum_var =
     let* name = id in
     let* value =
-      optional (skip_space *> token '(' *> optional expr <* token ')')
+      optional (skip_nls *> token OpenRound *> optional expr <* token CloseRound)
     in
     let value = Option.value ~default:None value in
     return { name; value }
   in
-  token '[' *> golike_sep_by (token ',') sum_var <* token ']'
+  token OpenSquare *> golike_sep_by (token Comma) sum_var <* token CloseSquare
 
-let kind = keyword "mut" *> return Mut <|> keyword "val" *> return Val
+let kind = keyword Mut *> return Mut <|> keyword Val *> return Val
 
 let prod expr =
   let prod_field =
-    (let* kind = optional (kind <* skip_space) in
+    (let* kind = optional (kind <* skip_nls) in
      let* name_or_count =
        id >>| (fun s -> Name s) <|> (num >>| fun n -> Count n)
      in
-     let* type' = optional (skip_space *> token ':' *> skip_space *> expr) in
-     let* value = optional (skip_space *> token '=' *> skip_space *> expr) in
+     let* type' = optional (skip_nls *> token Colon *> skip_nls *> expr) in
+     let* value = optional (skip_nls *> token Assign *> skip_nls *> expr) in
      if Option.is_some kind || Option.is_some type' || Option.is_some value then
        return (Decl { kind; name_or_count; type'; value })
      else
@@ -179,52 +151,49 @@ let prod expr =
             | Count n -> Lit (Num n))))
     <|> (expr >>| fun expr -> Value expr)
   in
-  token '(' *> golike_sep_by (token ',') prod_field <* token ')'
+  token OpenRound *> golike_sep_by (token Comma) prod_field <* token CloseRound
 
 let decl expr =
   let* kind = kind in
-  skip_space
+  skip_nls
   *> let* name = id in
-     let* type' = optional (skip_space *> token ':' *> skip_space *> expr) in
-     let* value = optional (skip_space *> token '=' *> skip_space *> expr) in
+     let* type' = optional (skip_nls *> token Colon *> skip_nls *> expr) in
+     let* value = optional (skip_nls *> token Assign *> skip_nls *> expr) in
      return { kind; name; type'; value }
 
 let assign expr =
   let* assignee = expr in
-  skip_space *> token '=' *> skip_space
+  skip_nls *> token Assign *> skip_nls
   *> let* value = expr in
      return { assignee; value }
 
-let loop expr = keyword "loop" *> skip_space *> expr
+let loop expr = keyword Loop *> skip_nls *> expr
 
 let stmt expr =
-  keyword "brk" *> return Brk
-  <|> keyword "ctn" *> return Ctn
-  <|> ( keyword "ret" *> skip_space *> optional expr >>| fun expr_opt ->
-        Ret expr_opt )
+  keyword Brk *> return Brk
+  <|> keyword Ctn *> return Ctn
+  <|> (keyword Ret *> skip_nls *> optional expr >>| fun expr_opt -> Ret expr_opt)
   <|> (decl expr >>| fun decl : stmt -> Decl decl)
   <|> (assign expr >>| fun assign -> Assign assign)
   <|> (loop expr >>| fun expr -> Loop expr)
   <|> (expr >>| fun expr -> Expr expr)
 
 let block expr =
-  token '{' *> skip_space
-  *> sep_by
-       (skip_horiz_space *> (token '\n' <|> token ';') <* skip_space)
-       (stmt expr)
-  <* skip_space <* token '}'
+  token OpenCurly *> skip_nls
+  *> sep_by (token Nl <|> token Semi <* skip_nls) (stmt expr)
+  <* skip_nls <* token CloseCurly
 
 let proc_t expr =
-  keyword "proc" *> skip_space
+  keyword Proc *> skip_nls
   *> let* args = prod expr in
      let* return_type =
-       optional (skip_space *> token ':' *> skip_space *> expr)
+       optional (skip_nls *> token Colon *> skip_nls *> expr)
      in
      return { args; return_type }
 
 let proc expr =
   let* type' = proc_t expr in
-  skip_space
+  skip_nls
   *> let* body = block expr in
      return { type'; body }
 
@@ -244,7 +213,7 @@ let expr =
       in
       let dot_expr =
         let* accessee = prim_expr in
-        let* accessors = repeat (skip_space *> token '.' *> skip_space *> id) in
+        let* accessors = repeat (skip_nls *> token Dot *> skip_nls *> id) in
         return
           (List.fold_left
              (fun accessee accessor -> Binop (accessee, Dot, Id accessor))
@@ -252,7 +221,7 @@ let expr =
       in
       let call_expr =
         let* callee = dot_expr in
-        let* argss = repeat (skip_space *> prod expr) in
+        let* argss = repeat (skip_nls *> prod expr) in
         return
           (List.fold_left
              (fun callee args -> Call { callee; args })
@@ -261,9 +230,9 @@ let expr =
       let uop_expr =
         let* uops =
           repeat
-            (token '!' *> return Not
-            <|> token '-' *> return UnaryMins
-            <* skip_space)
+            (token LNot *> return Not
+            <|> token Mins *> return UnaryMins
+            <* skip_nls)
         in
         let* expr = call_expr in
         return (List.fold_left (fun expr uop -> Uop (uop, expr)) expr uops)
@@ -271,21 +240,21 @@ let expr =
       let* lhs1 = uop_expr in
       let* rest =
         repeat
-          (skip_space
+          (skip_nls
           *> let* binop =
-               token '+' *> return Plus
-               <|> token '-' *> return Mins
-               <|> token '*' *> return Astr
-               <|> token '/' *> return Slsh
-               <|> token '%' *> return Perc
-               <|> string "&&" *> return And
-               <|> string "||" *> return Or
-               <|> string "==" *> return Eq
-               <|> string "!=" *> return Ne
-               <|> string "<=" *> return Le
-               <|> token '<' *> return Lt
+               token Plus *> return Plus
+               <|> token Mins *> return Mins
+               <|> token Astr *> return Astr
+               <|> token Slsh *> return Slsh
+               <|> token Perc *> return Perc
+               <|> token LAnd *> return And
+               <|> token LOr *> return Or
+               <|> token Eq *> return Eq
+               <|> token Ne *> return Ne
+               <|> token Le *> return Le
+               <|> token Lt *> return Lt
              in
-             skip_space
+             skip_nls
              *> let* rhs = uop_expr in
                 return (binop, rhs))
       in
@@ -294,7 +263,7 @@ let expr =
            (fun lhs (binop, rhs) -> Binop (lhs, binop, rhs))
            lhs1 rest))
 
-let ast : ast t = skip_space *> expr <* skip_space
+let ast : ast t = skip_nls *> expr <* skip_nls
 
 exception ParseError of string
 
@@ -304,7 +273,8 @@ let () =
     | _ -> None)
 
 let parse text =
-  match parse_string text ast with
+  let tokens = Lex.lex text in
+  match parse tokens ast with
   | Ok ast -> ast
   | Error s -> raise (ParseError (string_of_parse_error s))
 
