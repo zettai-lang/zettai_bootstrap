@@ -12,4 +12,4 @@
  (inline_tests)
  (preprocess
   (pps ppx_assert ppx_compare ppx_deriving.show ppx_expect ppx_inline_test
-    ppx_sexp_conv)))
+    ppx_sexp_conv ppx_variants_conv)))

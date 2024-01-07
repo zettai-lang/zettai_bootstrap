@@ -1,4 +1,21 @@
 type kind = Mut | Val
+type lit = Num of int | Rune of char | String of string
+type name_or_count = Name of string | Count of int
+type uop = Not | UnaryMins
+
+type binop =
+  | Plus
+  | Mins
+  | Astr
+  | Slsh
+  | Perc
+  | And
+  | Or
+  | Eq
+  | Ne
+  | Le
+  | Lt
+  | Dot
 
 type expr =
   | Lit of lit
@@ -13,23 +30,6 @@ type expr =
   | ProcT of proc_t
   | Call of call
 
-and lit = Num of int | Rune of char | String of string
-and uop = Not | UnaryMins
-
-and binop =
-  | Plus
-  | Mins
-  | Astr
-  | Slsh
-  | Perc
-  | And
-  | Or
-  | Eq
-  | Ne
-  | Le
-  | Lt
-  | Dot
-
 and if' = { cond : expr; if_branch : expr; else_branch : expr option }
 and sum_var = { name : string; value : expr option }
 and prod_field = Decl of decl_field | Value of expr
@@ -40,8 +40,6 @@ and decl_field = {
   type' : expr option;
   value : expr option;
 }
-
-and name_or_count = Name of string | Count of int
 
 and stmt =
   | Brk
