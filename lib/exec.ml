@@ -1,5 +1,11 @@
 open Util
 
+type pos = StringPos of Starpath.string_pos | FilePos of Starpath.file_pos
+
+let string_of_pos = function
+  | StringPos pos -> Starpath.StringPos.string_of_pos pos
+  | FilePos pos -> Starpath.FilePos.string_of_pos pos
+
 exception TODO
 
 module StringMap = Map.Make (String)
@@ -9,7 +15,7 @@ type value =
   | Rune of char
   | SumVariant of sum_variant
   | Prod of prod
-  | Proc of (prod -> value)
+  | Proc of (pos -> prod -> value)
   | Type of type'
 
 and scope_entry = Mut of value option ref | Val of value
@@ -34,93 +40,142 @@ let scope_entry value = function
   | Parse.Mut -> Mut (ref (Some value))
   | Val -> Val value
 
-exception UseBeforeInitialization of string
+exception UseBeforeInitialization of pos * string
 
 let () =
   Printexc.register_printer (function
-    | UseBeforeInitialization name ->
-        Some (Printf.sprintf "use of \"%s\" before initialization" name)
+    | UseBeforeInitialization (pos, name) ->
+        Some
+          (Printf.sprintf "%s: use of \"%s\" before initialization"
+             (string_of_pos pos) name)
     | _ -> None)
 
-let value_of_scope_entry name = function
+let value_of_scope_entry pos name = function
   | Mut value_ref ->
-      get_or_else !value_ref (fun () -> raise (UseBeforeInitialization name))
+      get_or_else !value_ref (fun () ->
+          raise (UseBeforeInitialization (pos, name)))
   | Val value -> value
 
 (* TODO: replace this with a general typecheck error *)
-exception ValueAsType of value
+exception ValueAsType of pos * value
 
-let expect_type = function
+let () =
+  Printexc.register_printer (function
+    | ValueAsType (pos, _) ->
+        Some (Printf.sprintf "%s: value used as type" (string_of_pos pos))
+    | _ -> None)
+
+let expect_type pos = function
   | Type t -> t
-  | invalid -> raise (ValueAsType invalid)
+  | invalid -> raise (ValueAsType (pos, invalid))
 
 let unit_val = Prod []
 
-type 'a ctrl = Brk | Ctn | Ret of value option | None of 'a
+type 'a ctrl =
+  | Brk of pos
+  | Ctn of pos
+  | Ret of pos * value option
+  | None of 'a
 
 let return a = None a
 
 let ( >>= ) ctrl f =
   match ctrl with
-  | Brk -> Brk
-  | Ctn -> Ctn
-  | Ret value -> Ret value
+  | Brk pos -> Brk pos
+  | Ctn pos -> Ctn pos
+  | Ret (pos, value) -> Ret (pos, value)
   | None a -> f a
 
 let ( let* ) = ( >>= )
 
-exception NumAsArgumentName
+exception NumAsArgumentName of pos
 
 let () =
   Printexc.register_printer (function
-    | NumAsArgumentName ->
-        Some (Printf.sprintf "number specified as argument name")
+    | NumAsArgumentName pos ->
+        Some
+          (Printf.sprintf "%s: number specified as argument name"
+             (string_of_pos pos))
     | _ -> None)
 
-exception ValueAsArgument
+exception ValueAsArgument of pos
 
 let () =
   Printexc.register_printer (function
-    | ValueAsArgument ->
-        Some (Printf.sprintf "value specified in function declaration")
+    | ValueAsArgument pos ->
+        Some
+          (Printf.sprintf "%s:value specified in function declaration"
+             (string_of_pos pos))
     | _ -> None)
 
-exception MutArgument
+exception MutArgument of pos
 
 let () =
   Printexc.register_printer (function
-    | MutArgument -> Some (Printf.sprintf "argument specified as mut")
+    | MutArgument pos ->
+        Some
+          (Printf.sprintf "%s: argument specified as mut" (string_of_pos pos))
     | _ -> None)
 
-let rec args_names : Parse.prod_field list -> _ = function
+let rec args_names : _ Parse.prod_field list -> _ = function
   | [] -> []
-  | Parse.Decl { kind; name_or_count = Name name; _ } :: fields ->
+  | Parse.Decl { kind; name_or_count = _, Name name; _ } :: fields ->
       let () =
-        match kind with Some Parse.Mut -> raise MutArgument | _ -> ()
+        match kind with
+        | Some (pos, Parse.Mut) -> raise (MutArgument pos)
+        | _ -> ()
       in
       name :: args_names fields
-  | Decl { name_or_count = Count _; _ } :: _ -> raise NumAsArgumentName
-  | Value _ :: _ -> raise ValueAsArgument
+  | Decl { name_or_count = count_pos, Count _; _ } :: _ ->
+      raise (NumAsArgumentName count_pos)
+  | Value (pos, _) :: _ -> raise (ValueAsArgument pos)
 
-exception InvalidBinopOperands of value * value
-exception InvalidUnaryOperand of value
-exception InvalidIfCond of value
-exception UninitializedVal of string
-exception UnboundIdent of string
+exception InvalidBinopOperands of pos * value * value
+exception InvalidUnaryOperand of pos * value
+exception InvalidIfCond of pos * value
+exception UninitializedVal of pos * string
 
 let () =
   Printexc.register_printer (function
-    | UnboundIdent name -> Some (Printf.sprintf "unbound ident: \"%s\"" name)
+    | UninitializedVal (pos, name) ->
+        Some
+          (Printf.sprintf "%s: uninitialized value: \"%s\"" (string_of_pos pos)
+             name)
     | _ -> None)
 
-exception Redeclaration of string
-exception ImmutableAssign of string
-exception InvalidAccessee of value
-exception InvalidAccessor of Parse.expr
-exception InvalidField of string
-exception InvalidCallArgs of string list * prod
-exception InvalidCallee of value
-exception UnexpectedCtrl
+exception UnboundIdent of pos * string
+
+let () =
+  Printexc.register_printer (function
+    | UnboundIdent (pos, name) ->
+        Some
+          (Printf.sprintf "%s: unbound ident: \"%s\"" (string_of_pos pos) name)
+    | _ -> None)
+
+exception Redeclaration of pos * string
+
+let () =
+  Printexc.register_printer (function
+    | Redeclaration (pos, name) ->
+        Some
+          (Printf.sprintf "%s: redeclaration of: \"%s\"" (string_of_pos pos)
+             name)
+    | _ -> None)
+
+exception ImmutableAssign of pos * string
+exception InvalidAccessee of pos * value
+exception InvalidAccessor of pos
+exception InvalidField of pos * string
+exception InvalidCallArgs of pos * string list * prod
+
+let () =
+  Printexc.register_printer (function
+    | InvalidCallArgs (pos, _, _) ->
+        Some (Printf.sprintf "%s: invalid call args" (string_of_pos pos))
+    | _ -> None)
+
+exception InvalidCallee of pos * value
+exception UnexpectedCtrl of pos
 
 let bool_type_disc_false = 0
 let bool_type_disc_true = 1
@@ -142,7 +197,7 @@ let bool_from_bool b =
 let is_bool { type'; _ } = type' == bool_type
 let bool_not { disc; _ } = bool_from_bool (disc = bool_type_disc_false)
 
-exception ProcTypeWithoutReturn
+exception ProcTypeWithoutReturn of pos
 exception Unreachable
 
 let rec exec_expr expr scopes =
@@ -150,19 +205,6 @@ let rec exec_expr expr scopes =
   let exec_uop = exec_uop scopes in
   let exec_num_binop = exec_num_binop scopes in
   let exec_bool_binop = exec_bool_binop scopes in
-  let rec eq = function
-    | SumVariant v1, SumVariant v2 -> begin
-        v1.type' == v2.type' && v1.disc = v2.disc
-        &&
-        match (v1.field, v2.field) with
-        | Some f1, Some f2 -> eq (f1, f2)
-        | None, None -> true
-        | _ -> raise Unreachable
-      end
-    | Num n1, Num n2 -> n1 = n2
-    | Rune r1, Rune r2 -> r1 = r2
-    | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs))
-  in
   match expr with
   | Parse.Lit lit -> begin
       match lit with
@@ -170,31 +212,46 @@ let rec exec_expr expr scopes =
       | Rune r -> return (Rune r)
       | String _s -> raise TODO
     end
-  | Id i ->
+  | Id (pos, i) ->
       let entry_opt = List.find_map (( ! ) >> StringMap.find_opt i) scopes in
-      let entry = get_or_else entry_opt @@ fun () -> raise (UnboundIdent i) in
-      return (value_of_scope_entry i entry)
-  | Uop (uop, operand) -> begin
+      let entry =
+        get_or_else entry_opt @@ fun () -> raise (UnboundIdent (pos, i))
+      in
+      return (value_of_scope_entry pos i entry)
+  | Uop (pos, uop, operand) -> begin
       match uop with
       | Not ->
           exec_uop operand (function
             | SumVariant variant when is_bool variant ->
                 return (bool_not variant)
-            | invalid -> raise (InvalidUnaryOperand invalid))
+            | invalid -> raise (InvalidUnaryOperand (pos, invalid)))
       | UnaryMins ->
           exec_uop operand (function
             | Num n -> return (Num (-n))
-            | invalid -> raise (InvalidUnaryOperand invalid))
+            | invalid -> raise (InvalidUnaryOperand (pos, invalid)))
     end
-  | Binop (lhs, binop, rhs) -> begin
+  | Binop (pos, lhs, binop, rhs_pos, rhs) -> begin
+      let rec eq = function
+        | SumVariant v1, SumVariant v2 -> begin
+            v1.type' == v2.type' && v1.disc = v2.disc
+            &&
+            match (v1.field, v2.field) with
+            | Some f1, Some f2 -> eq (f1, f2)
+            | None, None -> true
+            | _ -> raise Unreachable
+          end
+        | Num n1, Num n2 -> n1 = n2
+        | Rune r1, Rune r2 -> r1 = r2
+        | lhs, rhs -> raise (InvalidBinopOperands (pos, lhs, rhs))
+      in
       match binop with
-      | Plus -> exec_num_binop lhs rhs ( + )
-      | Mins -> exec_num_binop lhs rhs ( - )
-      | Astr -> exec_num_binop lhs rhs ( * )
-      | Slsh -> exec_num_binop lhs rhs ( / )
-      | Perc -> exec_num_binop lhs rhs ( mod )
-      | And -> exec_bool_binop lhs rhs ( && )
-      | Or -> exec_bool_binop lhs rhs ( || )
+      | Plus -> exec_num_binop pos lhs rhs ( + )
+      | Mins -> exec_num_binop pos lhs rhs ( - )
+      | Astr -> exec_num_binop pos lhs rhs ( * )
+      | Slsh -> exec_num_binop pos lhs rhs ( / )
+      | Perc -> exec_num_binop pos lhs rhs ( mod )
+      | And -> exec_bool_binop pos lhs rhs ( && )
+      | Or -> exec_bool_binop pos lhs rhs ( || )
       | Eq -> exec_binop lhs rhs (eq >> bool_from_bool)
       | Ne -> exec_binop lhs rhs (eq >> not >> bool_from_bool)
       | Le ->
@@ -202,16 +259,18 @@ let rec exec_expr expr scopes =
               match (lhs, rhs) with
               | Num n1, Num n2 -> bool_from_bool (n1 <= n2)
               | Rune r1, Rune r2 -> bool_from_bool (r1 <= r2)
-              | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
+              | lhs, rhs -> raise (InvalidBinopOperands (pos, lhs, rhs)))
       | Lt ->
           exec_binop lhs rhs (fun (lhs, rhs) ->
               match (lhs, rhs) with
               | Num n1, Num n2 -> bool_from_bool (n1 < n2)
               | Rune r1, Rune r2 -> bool_from_bool (r1 < r2)
-              | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs)))
-      | Dot -> (
-          let accessor =
-            match rhs with Id i -> i | _ -> raise (InvalidAccessor rhs)
+              | lhs, rhs -> raise (InvalidBinopOperands (pos, lhs, rhs)))
+      | Dot -> begin
+          let accessor_pos, accessor =
+            match rhs with
+            | Id (pos, i) -> (pos, i)
+            | _ -> raise (InvalidAccessor rhs_pos)
           in
           let* ctrl = exec_expr lhs scopes in
           match ctrl with
@@ -220,8 +279,8 @@ let rec exec_expr expr scopes =
                 List.find_opt (fun { name; _ } -> name = Some accessor) fields
               with
               | Some { entry; _ } ->
-                  return (value_of_scope_entry accessor entry)
-              | None -> raise (InvalidField accessor)
+                  return (value_of_scope_entry accessor_pos accessor entry)
+              | None -> raise (InvalidField (accessor_pos, accessor))
             end
           | Type (Sum type') -> (
               match
@@ -234,16 +293,19 @@ let rec exec_expr expr scopes =
               | Some { disc; field_type = Some _; _ } ->
                   return
                     (Proc
-                       (fun fields ->
+                       (fun call_pos fields ->
                          match fields with
-                         | [ { name = None | Some "value"; entry } ] ->
-                             let value = value_of_scope_entry "value" entry in
+                         | [ { name = None | Some "value"; entry = Val value } ]
+                           ->
                              SumVariant { type'; disc; field = Some value }
-                         | _ -> raise (InvalidCallArgs ([ "value" ], fields))))
-              | None -> raise (InvalidField accessor))
-          | invalid -> raise (InvalidAccessee invalid))
+                         | _ ->
+                             raise
+                               (InvalidCallArgs (call_pos, [ "value" ], fields))))
+              | None -> raise (InvalidField (accessor_pos, accessor)))
+          | invalid -> raise (InvalidAccessee (pos, invalid))
+        end
     end
-  | If { cond; if_branch; else_branch } -> begin
+  | If { cond = cond_pos, cond; if_branch; else_branch } -> begin
       let* ctrl = exec_expr cond scopes in
       match ctrl with
       | SumVariant variant
@@ -255,7 +317,7 @@ let rec exec_expr expr scopes =
           | Some else_branch -> exec_expr else_branch scopes
           | None -> return unit_val
         end
-      | cond -> raise (InvalidIfCond cond)
+      | cond -> raise (InvalidIfCond (cond_pos, cond))
     end
   | Sum variants -> exec_sum variants scopes
   | Prod fields ->
@@ -266,11 +328,11 @@ let rec exec_expr expr scopes =
       let expected = args_names args in
       return
         (Proc
-           (fun fields ->
+           (fun call_pos fields ->
              let field_pairs =
                try List.combine expected fields
                with Invalid_argument _ ->
-                 raise (InvalidCallArgs (expected, fields))
+                 raise (InvalidCallArgs (call_pos, expected, fields))
              in
              let fields_scope =
                List.fold_left
@@ -278,7 +340,7 @@ let rec exec_expr expr scopes =
                    let () =
                      match name with
                      | Some name when name <> expected_name ->
-                         raise (InvalidCallArgs (expected, fields))
+                         raise (InvalidCallArgs (call_pos, expected, fields))
                      | _ -> ()
                    in
                    StringMap.add expected_name entry scope)
@@ -287,21 +349,21 @@ let rec exec_expr expr scopes =
              let ctrl = exec_block (ref fields_scope :: scopes) body in
              match ctrl with
              | None value -> value
-             | Brk | Ctn -> raise UnexpectedCtrl
-             | Ret value -> Option.value value ~default:unit_val))
-  | ProcT { args; return_type = Some return_type } ->
+             | Brk pos | Ctn pos -> raise (UnexpectedCtrl pos)
+             | Ret (_, value) -> Option.value value ~default:unit_val))
+  | ProcT (_, { args; return_type = Some (return_type_pos, return_type) }) ->
       let* arg_types = exec_arg_types args scopes in
       let* return_type_val = exec_expr return_type scopes in
-      let return_type = expect_type return_type_val in
+      let return_type = expect_type return_type_pos return_type_val in
       return (Type (Proc { arg_types; return_type }))
-  | ProcT { return_type = None; _ } -> raise ProcTypeWithoutReturn
-  | Call { callee; args } -> begin
+  | ProcT (pos, { return_type = None; _ }) -> raise (ProcTypeWithoutReturn pos)
+  | Call (pos, { callee; args }) -> begin
       let* callee = exec_expr callee scopes in
       match callee with
       | Proc f ->
           let* args = exec_prod args scopes in
-          return (f args)
-      | invalid -> raise (InvalidCallee invalid)
+          return (f pos args)
+      | invalid -> raise (InvalidCallee (pos, invalid))
     end
 
 and exec_binop scopes lhs rhs op =
@@ -309,30 +371,30 @@ and exec_binop scopes lhs rhs op =
   let* rhs = exec_expr rhs scopes in
   return (op (lhs, rhs))
 
-and exec_num_binop scopes lhs rhs op =
+and exec_num_binop scopes pos lhs rhs op =
   exec_binop scopes lhs rhs @@ function
   | Num n1, Num n2 -> Num (op n1 n2)
-  | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs))
+  | lhs, rhs -> raise (InvalidBinopOperands (pos, lhs, rhs))
 
-and exec_bool_binop scopes lhs rhs op =
+and exec_bool_binop scopes pos lhs rhs op =
   exec_binop scopes lhs rhs @@ function
   | SumVariant v1, SumVariant v2 when is_bool v1 && is_bool v2 ->
       let d1 = v1.disc <> 0 in
       let d2 = v2.disc <> 0 in
       bool_from_bool (op d1 d2)
-  | lhs, rhs -> raise (InvalidBinopOperands (lhs, rhs))
+  | lhs, rhs -> raise (InvalidBinopOperands (pos, lhs, rhs))
 
 and exec_uop scopes operand op = exec_expr operand scopes >>= op
 
 and exec_sum variants scopes =
   List.fold_left
-    (fun ctrl ({ name; value } : Parse.sum_var) ->
+    (fun ctrl ({ name; value } : _ Parse.sum_var) ->
       let* variants = ctrl in
       let disc = Oo.id (object end) in
       match value with
-      | Some value ->
-          let* field_type = exec_expr value scopes in
-          let field_type = Some (expect_type field_type) in
+      | Some (field_type_pos, field_type) ->
+          let* field_type = exec_expr field_type scopes in
+          let field_type = Some (expect_type field_type_pos field_type) in
           return (variants @ [ { name; disc; field_type } ])
       | None -> return (variants @ [ { name; disc; field_type = None } ]))
     (return []) variants
@@ -340,21 +402,27 @@ and exec_sum variants scopes =
 
 and exec_prod fields scopes =
   List.fold_left
-    (fun (prev_kind, ctrl) (field : Parse.prod_field) ->
+    (fun (prev_kind, ctrl) (field : _ Parse.prod_field) ->
       match ctrl with
       | None fields -> begin
           match field with
           | Parse.Decl
-              { kind; name_or_count = Name name; value = Some value; _ } ->
-            begin
-              let kind = Option.value kind ~default:prev_kind in
+              {
+                kind;
+                name_or_count = name_pos, Name name;
+                value = Some value;
+                _;
+              } -> begin
+              let kind =
+                Option.value (Option.map snd kind) ~default:prev_kind
+              in
               let ctrl = exec_expr value scopes in
               let () =
                 match
                   List.find_opt (( = ) name)
                     (List.filter_map (fun { name; _ } -> name) fields)
                 with
-                | Some name -> raise (Redeclaration name)
+                | Some name -> raise (Redeclaration (name_pos, name))
                 | None -> ()
               in
               match ctrl with
@@ -362,43 +430,45 @@ and exec_prod fields scopes =
                   let name = Some name in
                   let entry = scope_entry value kind in
                   (kind, return (fields @ [ { name; entry } ]))
-              | Brk -> (kind, Brk)
-              | Ctn -> (kind, Ctn)
-              | Ret value -> (kind, Ret value)
+              | Brk pos -> (kind, Brk pos)
+              | Ctn pos -> (kind, Ctn pos)
+              | Ret (pos, value) -> (kind, Ret (pos, value))
             end
-          | Value value -> (
+          | Value (_, value) -> (
               let ctrl = exec_expr value scopes in
               match ctrl with
               | None value ->
                   let name = Option.None in
                   let entry = scope_entry value prev_kind in
                   (prev_kind, return (fields @ [ { name; entry } ]))
-              | Brk -> (prev_kind, Brk)
-              | Ctn -> (prev_kind, Ctn)
-              | Ret value -> (prev_kind, Ret value))
+              | Brk pos -> (prev_kind, Brk pos)
+              | Ctn pos -> (prev_kind, Ctn pos)
+              | Ret (pos, value) -> (prev_kind, Ret (pos, value)))
           | _ -> raise TODO
         end
-      | Brk -> (prev_kind, Brk)
-      | Ctn -> (prev_kind, Ctn)
-      | Ret value -> (prev_kind, Ret value))
+      | Brk pos -> (prev_kind, Brk pos)
+      | Ctn pos -> (prev_kind, Ctn pos)
+      | Ret (pos, value) -> (prev_kind, Ret (pos, value)))
     (Parse.Val, return [])
     fields
   |> snd
 
 and exec_arg_types args scopes =
   List.fold_left
-    (fun (prev_kind, ctrl) (arg : Parse.prod_field) ->
+    (fun (prev_kind, ctrl) (arg : _ Parse.prod_field) ->
       match ctrl with
       | None args -> begin
           match arg with
           | Parse.Decl
               {
                 kind;
-                name_or_count = Name name;
-                type' = Some type';
+                name_or_count = name_pos, Name name;
+                type' = Some (type_pos, type');
                 value = None;
               } -> (
-              let kind = Option.value kind ~default:prev_kind in
+              let kind =
+                Option.value (Option.map snd kind) ~default:prev_kind
+              in
               let ctrl = exec_expr type' scopes in
               let () =
                 match
@@ -407,21 +477,21 @@ and exec_arg_types args scopes =
                       existing_name = name)
                     args
                 with
-                | Some { name; _ } -> raise (Redeclaration name)
+                | Some { name; _ } -> raise (Redeclaration (name_pos, name))
                 | None -> ()
               in
               match ctrl with
               | None type_val ->
-                  let type' = expect_type type_val in
+                  let type' = expect_type type_pos type_val in
                   (kind, return (args @ [ { kind; name; type' } ]))
-              | Brk -> (kind, Brk)
-              | Ctn -> (kind, Ctn)
-              | Ret value -> (kind, Ret value))
+              | Brk pos -> (kind, Brk pos)
+              | Ctn pos -> (kind, Ctn pos)
+              | Ret (pos, value) -> (kind, Ret (pos, value)))
           | _ -> raise TODO
         end
-      | Brk -> (prev_kind, Brk)
-      | Ctn -> (prev_kind, Ctn)
-      | Ret value -> (prev_kind, Ret value))
+      | Brk pos -> (prev_kind, Brk pos)
+      | Ctn pos -> (prev_kind, Ctn pos)
+      | Ret (pos, value) -> (prev_kind, Ret (pos, value)))
     (Parse.Val, return [])
     args
   |> snd
@@ -445,16 +515,16 @@ and exec_nonsingle_block stmts scopes =
 (* scopes must be non-empty. *)
 and exec_stmt stmt scopes =
   match stmt with
-  | Parse.Brk -> Brk
-  | Ctn -> Ctn
-  | Ret value -> begin
+  | Parse.Brk pos -> Brk pos
+  | Ctn pos -> Ctn pos
+  | Ret (pos, value) -> begin
       match value with
       | Some value ->
           let* value = exec_expr value scopes in
-          Ret (Some value)
-      | None -> Ret None
+          Ret (pos, Some value)
+      | None -> Ret (pos, None)
     end
-  | Decl { kind; name; value; _ } -> begin
+  | Decl (decl_pos, { kind; name = name_pos, name; value; _ }) -> begin
       match (kind, value) with
       | _, Some value ->
           let* value = exec_expr value scopes in
@@ -462,7 +532,7 @@ and exec_stmt stmt scopes =
           let scope = List.hd scopes in
           let () =
             match StringMap.find_opt name !scope with
-            | Some _ -> raise (Redeclaration name)
+            | Some _ -> raise (Redeclaration (name_pos, name))
             | None -> ()
           in
           scope := StringMap.add name entry !scope;
@@ -471,31 +541,31 @@ and exec_stmt stmt scopes =
           let scope = List.hd scopes in
           let () =
             match StringMap.find_opt name !scope with
-            | Some _ -> raise (Redeclaration name)
+            | Some _ -> raise (Redeclaration (name_pos, name))
             | None -> ()
           in
           scope := StringMap.add name (Mut (ref Option.None)) !scope;
           return ()
-      | Val, None -> raise (UninitializedVal name)
+      | Val, None -> raise (UninitializedVal (decl_pos, name))
     end
   | Assign { assignee; value } -> begin
-      let try_scope_entry_assign name assignee' scopes =
+      let try_scope_entry_assign pos name assignee' scopes =
         match assignee' with
         | Mut value_ref ->
             let* value = exec_expr value scopes in
             value_ref := Some value;
             return ()
-        | _ -> raise (ImmutableAssign name)
+        | _ -> raise (ImmutableAssign (pos, name))
       in
       match assignee with
-      | Id i -> begin
+      | Id (pos, i) -> begin
           match
             List.find_map (fun scope -> StringMap.find_opt i !scope) scopes
           with
-          | Some assignee -> try_scope_entry_assign i assignee scopes
-          | None -> raise (UnboundIdent i)
+          | Some assignee -> try_scope_entry_assign pos i assignee scopes
+          | None -> raise (UnboundIdent (pos, i))
         end
-      | Binop (accessee, Dot, Id accessor) -> begin
+      | Binop (pos, accessee, Dot, _, Id (accessor_pos, accessor)) -> begin
           let* accessee = exec_expr accessee scopes in
           match accessee with
           | Prod fields -> begin
@@ -503,10 +573,10 @@ and exec_stmt stmt scopes =
                 List.find_opt (fun { name; _ } -> name = Some accessor) fields
               with
               | Some { entry; _ } ->
-                  try_scope_entry_assign accessor entry scopes
-              | None -> raise (InvalidField accessor)
+                  try_scope_entry_assign pos accessor entry scopes
+              | None -> raise (InvalidField (accessor_pos, accessor))
             end
-          | invalid -> raise (InvalidAccessee invalid)
+          | invalid -> raise (InvalidAccessee (pos, invalid))
         end
       | _ -> raise TODO
     end
@@ -517,8 +587,8 @@ and exec_stmt stmt scopes =
 
 and exec_loop body scopes =
   match exec_expr body scopes with
-  | Brk -> return ()
-  | Ret value -> Ret value
+  | Brk _ -> return ()
+  | Ret (pos, value) -> Ret (pos, value)
   | _ -> exec_loop body scopes
 
 let rec stringify value =
@@ -709,7 +779,7 @@ let%expect_test _ =
 |}]
 
 let%expect_test _ =
-  stringify (Proc (fun _ -> unit_val)) |> print_endline;
+  stringify (Proc (fun _ _ -> unit_val)) |> print_endline;
   [%expect "proc(...) { ... }"]
 
 let%expect_test _ =
@@ -807,13 +877,12 @@ let intrinsics =
       entry =
         Val
           (Proc
-             (fun fields ->
+             (fun call_pos fields ->
                match fields with
-               | [ { name = None | Some "value"; entry } ] ->
-                   let value = value_of_scope_entry "value" entry in
+               | [ { name = None | Some "value"; entry = Val value } ] ->
                    let () = stringify value |> print_endline in
                    unit_val
-               | _ -> raise (InvalidCallArgs ([ "value" ], fields))));
+               | _ -> raise (InvalidCallArgs (call_pos, [ "value" ], fields))));
     };
   ]
 
@@ -829,298 +898,209 @@ let exec_ast ast =
   let ctrl = exec_expr ast [ ref builtins ] in
   match ctrl with
   | None value -> value
-  | Brk | Ctn | Ret _ -> raise UnexpectedCtrl
+  | Brk pos | Ctn pos | Ret (pos, _) -> raise (UnexpectedCtrl pos)
+
+let exec_string s =
+  let ast = Parse.parse_string s in
+  let ast = Parse.map_ast (fun pos -> StringPos pos) ast in
+  exec_ast ast
 
 exception ExpectedProc
 
 let exec path =
-  let text = Core.In_channel.read_lines path |> String.concat "\n" in
-  let ast = Parse.parse text in
-  let _ = match exec_ast ast with Proc f -> f [] | _ -> raise ExpectedProc in
+  let ast = Parse.parse path in
+  let ast = Parse.map_ast (fun pos -> FilePos pos) ast in
+  let _ =
+    match exec_ast ast with
+    | Proc f -> f (FilePos (Starpath.FilePos.pos0 path)) []
+    | _ -> raise ExpectedProc
+  in
   ()
 
 let assert_raises = OUnit2.assert_raises
-let parse = Parse.parse
-
-let%test _ =
-  let ast = parse "5 + 9" in
-  Num 14 = exec_ast ast
+let%test _ = Num 14 = exec_string "5 + 9"
 
 let%test_unit _ =
-  let ast = parse "5 == true" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidBinopOperands (Num 5, bool_from_bool true)) f
-
-let%test_unit _ =
-  let ast = parse "false + true" in
-  let f () = exec_ast ast in
+  let f () = exec_string "5 == true" in
   assert_raises
-    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
+    (InvalidBinopOperands
+       (StringPos { row = 1; col = 1 }, Num 5, bool_from_bool true))
     f
 
-let%test _ =
-  let ast = parse "5 - 9" in
-  Num (-4) = exec_ast ast
-
 let%test_unit _ =
-  let ast = parse "false - true" in
-  let f () = exec_ast ast in
+  let f () = exec_string "false + true" in
   assert_raises
-    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
+    (InvalidBinopOperands
+       ( StringPos { row = 1; col = 1 },
+         bool_from_bool false,
+         bool_from_bool true ))
     f
 
-let%test _ =
-  let ast = parse "5 * 9" in
-  Num 45 = exec_ast ast
+let%test _ = Num (-4) = exec_string "5 - 9"
 
 let%test_unit _ =
-  let ast = parse "false * true" in
-  let f () = exec_ast ast in
+  let f () = exec_string "false - true" in
   assert_raises
-    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
+    (InvalidBinopOperands
+       ( StringPos { row = 1; col = 1 },
+         bool_from_bool false,
+         bool_from_bool true ))
     f
 
-let%test _ =
-  let ast = parse "5 / 9" in
-  Num 0 = exec_ast ast
+let%test _ = Num 45 = exec_string "5 * 9"
 
 let%test_unit _ =
-  let ast = parse "false / true" in
-  let f () = exec_ast ast in
+  let f () = exec_string "false * true" in
   assert_raises
-    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
+    (InvalidBinopOperands
+       ( StringPos { row = 1; col = 1 },
+         bool_from_bool false,
+         bool_from_bool true ))
     f
 
-let%test _ =
-  let ast = parse "5 % 9" in
-  Num 5 = exec_ast ast
+let%test _ = Num 0 = exec_string "5 / 9"
 
 let%test_unit _ =
-  let ast = parse "false % true" in
-  let f () = exec_ast ast in
+  let f () = exec_string "false / true" in
   assert_raises
-    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
+    (InvalidBinopOperands
+       ( StringPos { row = 1; col = 1 },
+         bool_from_bool false,
+         bool_from_bool true ))
     f
 
-let%test _ =
-  let ast = parse "true && false" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "true && true" in
-  bool_from_bool true = exec_ast ast
+let%test _ = Num 5 = exec_string "5 % 9"
 
 let%test_unit _ =
-  let ast = parse "5 && 9" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidBinopOperands (Num 5, Num 9)) f
-
-let%test _ =
-  let ast = parse "false || true" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "true || false" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "false || false" in
-  bool_from_bool false = exec_ast ast
-
-let%test_unit _ =
-  let ast = parse "5 || 9" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidBinopOperands (Num 5, Num 9)) f
-
-let%test _ =
-  let ast = parse "!false" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "!true" in
-  bool_from_bool false = exec_ast ast
-
-let%test_unit _ =
-  let ast = parse "!5" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidUnaryOperand (Num 5)) f
-
-let%test _ =
-  let ast = parse "-5" in
-  Num (-5) = exec_ast ast
-
-let%test_unit _ =
-  let ast = parse "-false" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidUnaryOperand (bool_from_bool false)) f
-
-let%test _ =
-  let ast = parse "false == true" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "true == true" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "5 == 9" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "5 == 5" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "'r' == 'q'" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "'r' == 'r'" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "false != true" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "true != true" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "5 != 9" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "5 != 5" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "'r' != 'q'" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "'r' != 'r'" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "5 <= 5" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "9 <= 5" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "'r' <= 'q'" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "'q' <= 'q'" in
-  bool_from_bool true = exec_ast ast
-
-let%test_unit _ =
-  let ast = parse "false <= true" in
-  let f () = exec_ast ast in
+  let f () = exec_string "false % true" in
   assert_raises
-    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
+    (InvalidBinopOperands
+       ( StringPos { row = 1; col = 1 },
+         bool_from_bool false,
+         bool_from_bool true ))
     f
 
-let%test _ =
-  let ast = parse "5 < 5" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "5 < 9" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "'r' < 'r'" in
-  bool_from_bool false = exec_ast ast
-
-let%test _ =
-  let ast = parse "'q' <= 'r'" in
-  bool_from_bool true = exec_ast ast
+let%test _ = bool_from_bool false = exec_string "true && false"
+let%test _ = bool_from_bool true = exec_string "true && true"
 
 let%test_unit _ =
-  let ast = parse "false < true" in
-  let f () = exec_ast ast in
+  let f () = exec_string "5 && 9" in
   assert_raises
-    (InvalidBinopOperands (bool_from_bool false, bool_from_bool true))
+    (InvalidBinopOperands (StringPos { row = 1; col = 1 }, Num 5, Num 9))
     f
 
-let%test _ =
-  let ast = parse "if true then 5 else 9" in
-  Num 5 = exec_ast ast
-
-let%test _ =
-  let ast = parse "if false then 5 else 9" in
-  Num 9 = exec_ast ast
-
-let%test _ =
-  let ast = parse "if false then 5" in
-  unit_val = exec_ast ast
+let%test _ = bool_from_bool true = exec_string "false || true"
+let%test _ = bool_from_bool true = exec_string "true || false"
+let%test _ = bool_from_bool false = exec_string "false || false"
 
 let%test_unit _ =
-  let ast = parse "if 9 then 5 else 9" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidIfCond (Num 9)) f
+  let f () = exec_string "5 || 9" in
+  assert_raises
+    (InvalidBinopOperands (StringPos { row = 1; col = 1 }, Num 5, Num 9))
+    f
 
-let%test _ =
-  let ast = parse "()" in
-  unit_val = exec_ast ast
-
-let%test _ =
-  let ast = parse "(val i = 9)" in
-  Prod [ { name = Some "i"; entry = Val (Num 9) } ] = exec_ast ast
+let%test _ = bool_from_bool true = exec_string "!false"
+let%test _ = bool_from_bool false = exec_string "!true"
 
 let%test_unit _ =
-  let ast = parse "(val i = 9, val i = 9)" in
-  let f () = exec_ast ast in
-  assert_raises (Redeclaration "i") f
+  let f () = exec_string "!5" in
+  assert_raises (InvalidUnaryOperand (StringPos { row = 1; col = 1 }, Num 5)) f
+
+let%test _ = Num (-5) = exec_string "-5"
+
+let%test_unit _ =
+  let f () = exec_string "-false" in
+  assert_raises
+    (InvalidUnaryOperand (StringPos { row = 1; col = 1 }, bool_from_bool false))
+    f
+
+let%test _ = bool_from_bool false = exec_string "false == true"
+let%test _ = bool_from_bool true = exec_string "true == true"
+let%test _ = bool_from_bool false = exec_string "5 == 9"
+let%test _ = bool_from_bool true = exec_string "5 == 5"
+let%test _ = bool_from_bool false = exec_string "'r' == 'q'"
+let%test _ = bool_from_bool true = exec_string "'r' == 'r'"
+let%test _ = bool_from_bool true = exec_string "false != true"
+let%test _ = bool_from_bool false = exec_string "true != true"
+let%test _ = bool_from_bool true = exec_string "5 != 9"
+let%test _ = bool_from_bool false = exec_string "5 != 5"
+let%test _ = bool_from_bool true = exec_string "'r' != 'q'"
+let%test _ = bool_from_bool false = exec_string "'r' != 'r'"
+let%test _ = bool_from_bool true = exec_string "5 <= 5"
+let%test _ = bool_from_bool false = exec_string "9 <= 5"
+let%test _ = bool_from_bool false = exec_string "'r' <= 'q'"
+let%test _ = bool_from_bool true = exec_string "'q' <= 'q'"
+
+let%test_unit _ =
+  let f () = exec_string "false <= true" in
+  assert_raises
+    (InvalidBinopOperands
+       ( StringPos { row = 1; col = 1 },
+         bool_from_bool false,
+         bool_from_bool true ))
+    f
+
+let%test _ = bool_from_bool false = exec_string "5 < 5"
+let%test _ = bool_from_bool true = exec_string "5 < 9"
+let%test _ = bool_from_bool false = exec_string "'r' < 'r'"
+let%test _ = bool_from_bool true = exec_string "'q' <= 'r'"
+
+let%test_unit _ =
+  let f () = exec_string "false < true" in
+  assert_raises
+    (InvalidBinopOperands
+       ( StringPos { row = 1; col = 1 },
+         bool_from_bool false,
+         bool_from_bool true ))
+    f
+
+let%test _ = Num 5 = exec_string "if true then 5 else 9"
+let%test _ = Num 9 = exec_string "if false then 5 else 9"
+let%test _ = unit_val = exec_string "if false then 5"
+
+let%test_unit _ =
+  let f () = exec_string "if 9 then 5 else 9" in
+  assert_raises (InvalidIfCond (StringPos { row = 1; col = 4 }, Num 9)) f
+
+let%test _ = unit_val = exec_string "()"
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true)" in
+  Prod [ { name = Some "i"; entry = Val (Num 9) } ] = exec_string "(val i = 9)"
+
+let%test_unit _ =
+  let f () = exec_string "(val i = 9, val i = 9)" in
+  assert_raises (Redeclaration (StringPos { row = 1; col = 17 }, "i")) f
+
+let%test _ =
   Prod
     [
       { name = Some "i"; entry = Val (Num 9) };
       { name = Some "j"; entry = Val (Rune 'a') };
       { name = Some "k"; entry = Mut (ref (Some (bool_from_bool true))) };
     ]
-  = exec_ast ast
+  = exec_string "(val i = 9, val j = 'a', mut k = true)"
+
+let%test _ = Num 9 = exec_string "(val i = 9).i"
+let%test _ = Rune 'a' = exec_string "(val i = 9, val j = 'a', mut k = true).j"
 
 let%test _ =
-  let ast = parse "(val i = 9).i" in
-  Num 9 = exec_ast ast
+  bool_from_bool true = exec_string "(val i = 9, val j = 'a', mut k = true).k"
 
 let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true).j" in
-  Rune 'a' = exec_ast ast
-
-let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
-  bool_from_bool true = exec_ast ast
-
-let%test _ =
-  let ast = parse "(val i = 9, val j = 'a', mut k = true).k" in
-  bool_from_bool true = exec_ast ast
+  bool_from_bool true = exec_string "(val i = 9, val j = 'a', mut k = true).k"
 
 let%test_unit _ =
-  let ast = parse "().i" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidField "i") f
+  let f () = exec_string "().i" in
+  assert_raises (InvalidField (StringPos { row = 1; col = 4 }, "i")) f
 
 let%test_unit _ =
-  let ast = parse "1.i" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidAccessee (Num 1)) f
+  let f () = exec_string "1.i" in
+  assert_raises (InvalidAccessee (StringPos { row = 1; col = 1 }, Num 1)) f
+
+let%test _ = match exec_string "[]" with Type (Sum []) -> true | _ -> false
 
 let%test _ =
-  let ast = parse "[]" in
-  match exec_ast ast with Type (Sum []) -> true | _ -> false
-
-let%test _ =
-  let ast = parse "[Red, Green(num), Blue(rune)]" in
-  match exec_ast ast with
+  match exec_string "[Red, Green(num), Blue(rune)]" with
   | Type
       (Sum
         [
@@ -1132,147 +1112,124 @@ let%test _ =
   | _ -> false
 
 let%test _ =
-  let ast = parse "[Red].Red" in
-  match exec_ast ast with SumVariant { field = None; _ } -> true | _ -> false
+  match exec_string "[Red].Red" with
+  | SumVariant { field = None; _ } -> true
+  | _ -> false
 
 let%test _ =
-  let ast = parse "[Green(num)].Green(value = 5)" in
-  match exec_ast ast with
+  match exec_string "[Green(num)].Green(value = 5)" with
   | SumVariant { field = Some (Num 5); _ } -> true
   | _ -> false
 
 let%test_unit _ =
-  let ast = parse "[Green(num)].Green(foo = 5)" in
-  let f () = exec_ast ast in
+  let f () = exec_string "[Green(num)].Green(foo = 5)" in
   assert_raises
     (InvalidCallArgs
-       ([ "value" ], [ { name = Some "foo"; entry = Val (Num 5) } ]))
+       ( StringPos { row = 1; col = 1 },
+         [ "value" ],
+         [ { name = Some "foo"; entry = Val (Num 5) } ] ))
     f
 
 let%test_unit _ =
-  let ast = parse "[].Blue" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidField "Blue") f
+  let f () = exec_string "[].Blue" in
+  assert_raises (InvalidField (StringPos { row = 1; col = 4 }, "Blue")) f
 
 let%test _ =
   (*
   The two sums are separate, so the variants aren't equal though they happen to
   have the same names
   *)
-  let ast = parse "[Red].Red == [Red].Red" in
-  bool_from_bool false = exec_ast ast
+  bool_from_bool false = exec_string "[Red].Red == [Red].Red"
 
 let%test _ =
-  let ast =
-    parse
+  bool_from_bool true
+  = exec_string
       {|
     proc() {
       val sum = [Red, Green, Blue]
       ret sum.Green == sum.Green
     }()
   |}
-  in
-  bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast =
-    parse
+  bool_from_bool true
+  = exec_string
       {|
     proc() {
       val sum = [Red, Green(num), Blue]
       ret sum.Green(value = 5) == sum.Green(value = 5)
     }()
   |}
-  in
-  bool_from_bool true = exec_ast ast
 
 let%test _ =
-  let ast =
-    parse
+  bool_from_bool false
+  = exec_string
       {|
     proc() {
       val sum = [Red, Green(num), Blue]
       ret sum.Green(value = 5) == sum.Green(value = 9)
     }()
   |}
-  in
-  bool_from_bool false = exec_ast ast
 
 let%test _ =
-  let ast =
-    parse
+  bool_from_bool false
+  = exec_string
       {|
     proc() {
       val sum = [Red, Green(num), Blue(num)]
       ret sum.Green(value = 5) == sum.Blue(value = 5)
     }()
   |}
-  in
-  bool_from_bool false = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "[].Blue" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidField "Blue") f
+  let f () = exec_string "[Blue(5)]" in
+  assert_raises (ValueAsType (StringPos { row = 1; col = 7 }, Num 5)) f
+
+let%test _ = unit_val = exec_string "{ proc() { } }()"
+let%test _ = Num 3 = exec_string "{ proc(val i: Nat) { i + 1 } }(2)"
+
+let%test _ =
+  Num 18
+  = exec_string
+      "{ proc(val i: Nat, val j: Nat) { i * j } }(val i = 2, val j = 9)"
+
+let%test _ =
+  Num 18 = exec_string "{ proc(val i, j: Nat) { i * j } }(val i = 2, val j = 9)"
 
 let%test_unit _ =
-  let ast = parse "[Blue(5)]" in
-  let f () = exec_ast ast in
-  assert_raises (ValueAsType (Num 5)) f
-
-let%test _ =
-  let ast = parse "{ proc() { } }()" in
-  unit_val = exec_ast ast
-
-let%test _ =
-  let ast = parse "{ proc(val i: Nat) { i + 1 } }(2)" in
-  Num 3 = exec_ast ast
-
-let%test _ =
-  let ast =
-    parse "{ proc(val i: Nat, val j: Nat) { i * j } }(val i = 2, val j = 9)"
-  in
-  Num 18 = exec_ast ast
-
-let%test _ =
-  let ast = parse "{ proc(val i, j: Nat) { i * j } }(val i = 2, val j = 9)" in
-  Num 18 = exec_ast ast
-
-let%test_unit _ =
-  let ast = parse "{ proc(val i: Nat) { i } }(val j = 2)" in
-  let f () = exec_ast ast in
+  let f () = exec_string "{ proc(val i: Nat) { i } }(val j = 2)" in
   assert_raises
-    (InvalidCallArgs ([ "i" ], [ { name = Some "j"; entry = Val (Num 2) } ]))
+    (InvalidCallArgs
+       ( StringPos { row = 1; col = 1 },
+         [ "i" ],
+         [ { name = Some "j"; entry = Val (Num 2) } ] ))
     f
 
 let%test_unit _ =
-  let ast = parse "{ proc(val i: Nat) { i } }()" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidCallArgs ([ "i" ], [])) f
+  let f () = exec_string "{ proc(val i: Nat) { i } }()" in
+  assert_raises
+    (InvalidCallArgs (StringPos { row = 1; col = 1 }, [ "i" ], []))
+    f
 
 let%test_unit _ =
-  let ast = parse "proc(mut i: Nat) { i }" in
-  let f () = exec_ast ast in
-  assert_raises MutArgument f
+  let f () = exec_string "proc(mut i: Nat) { i }" in
+  assert_raises (MutArgument (StringPos { row = 1; col = 6 })) f
 
 let%test_unit _ =
-  let ast = parse "proc(val 5: Nat) { }" in
-  let f () = exec_ast ast in
-  assert_raises NumAsArgumentName f
+  let f () = exec_string "proc(val 5: Nat) { }" in
+  assert_raises (NumAsArgumentName (StringPos { row = 1; col = 10 })) f
 
 let%test_unit _ =
-  let ast = parse "proc('a') { }" in
-  let f () = exec_ast ast in
-  assert_raises ValueAsArgument f
+  let f () = exec_string "proc('a') { }" in
+  assert_raises (ValueAsArgument (StringPos { row = 1; col = 6 })) f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { foo } }()" in
-  let f () = exec_ast ast in
-  assert_raises (UnboundIdent "foo") f
+  let f () = exec_string "{ proc() { foo } }()" in
+  assert_raises (UnboundIdent (StringPos { row = 1; col = 12 }, "foo")) f
 
 let%test _ =
-  let ast =
-    parse
+  Num 2
+  = exec_string
       {|
     {
       proc() {
@@ -1285,12 +1242,10 @@ let%test _ =
       }
     }()
   |}
-  in
-  Num 2 = exec_ast ast
 
 let%test_unit _ =
-  let ast =
-    parse
+  let f () =
+    exec_string
       {|
     {
       proc() {
@@ -1300,12 +1255,13 @@ let%test_unit _ =
     }()
   |}
   in
-  let f () = exec_ast ast in
-  assert_raises (UseBeforeInitialization "i") f
+  assert_raises
+    (UseBeforeInitialization (StringPos { row = 5; col = 13 }, "i"))
+    f
 
 let%test _ =
-  let ast =
-    parse
+  bool_from_bool true
+  = exec_string
       {|
     {
       proc() {
@@ -1326,16 +1282,12 @@ let%test _ =
       }
     }()
   |}
-  in
-  bool_from_bool true = exec_ast ast
+
+let%test _ = Rune 'a' = exec_string "{ proc() { loop { ret 'a' } } }()"
 
 let%test _ =
-  let ast = parse "{ proc() { loop { ret 'a' } } }()" in
-  Rune 'a' = exec_ast ast
-
-let%test _ =
-  let ast =
-    parse
+  Num 9
+  = exec_string
       {|
     {
       proc() {
@@ -1347,51 +1299,30 @@ let%test _ =
       }
     }()
   |}
-  in
-  Num 9 = exec_ast ast
 
 let%test_unit _ =
-  let ast = parse "{ proc() { brk } }()" in
-  let f () = exec_ast ast in
-  assert_raises UnexpectedCtrl f
+  let f () = exec_string "{ proc() { brk } }()" in
+  assert_raises (UnexpectedCtrl (StringPos { row = 1; col = 12 })) f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { ctn } }()" in
-  let f () = exec_ast ast in
-  assert_raises UnexpectedCtrl f
+  let f () = exec_string "{ proc() { ctn } }()" in
+  assert_raises (UnexpectedCtrl (StringPos { row = 1; col = 12 })) f
 
-let%test _ =
-  let ast = parse "{ proc() { { ret 5 }.foo } }()" in
-  Num 5 = exec_ast ast
-
-let%test _ =
-  let ast = parse "{ proc() { { ret 5 }() } }()" in
-  Num 5 = exec_ast ast
-
-let%test _ =
-  let ast = parse "{ proc() { { ret 5 } + 1 } }()" in
-  Num 5 = exec_ast ast
-
-let%test _ =
-  let ast = parse "{ proc() { 1 + { ret 5 } } }()" in
-  Num 5 = exec_ast ast
+let%test _ = Num 5 = exec_string "{ proc() { { ret 5 }.foo } }()"
+let%test _ = Num 5 = exec_string "{ proc() { { ret 5 }() } }()"
+let%test _ = Num 5 = exec_string "{ proc() { { ret 5 } + 1 } }()"
+let%test _ = Num 5 = exec_string "{ proc() { 1 + { ret 5 } } }()"
 
 let%test_unit _ =
-  let ast = parse "1()" in
-  let f () = exec_ast ast in
-  assert_raises (InvalidCallee (Num 1)) f
+  let f () = exec_string "1()" in
+  assert_raises (InvalidCallee (StringPos { row = 1; col = 1 }, Num 1)) f
 
-let%test _ =
-  let ast = parse "{ proc() { mut i } }()" in
-  unit_val = exec_ast ast
-
-let%test _ =
-  let ast = parse "{ proc() { ret } }()" in
-  unit_val = exec_ast ast
+let%test _ = unit_val = exec_string "{ proc() { mut i } }()"
+let%test _ = unit_val = exec_string "{ proc() { ret } }()"
 
 let%test_unit _ =
-  let ast =
-    parse
+  let f () =
+    exec_string
       {|
     {
       proc() {
@@ -1401,12 +1332,11 @@ let%test_unit _ =
     }()
   |}
   in
-  let f () = exec_ast ast in
-  assert_raises (Redeclaration "i") f
+  assert_raises (Redeclaration (StringPos { row = 5; col = 13 }, "i")) f
 
 let%test_unit _ =
-  let ast =
-    parse
+  let f () =
+    exec_string
       {|
     {
       proc() {
@@ -1416,17 +1346,15 @@ let%test_unit _ =
     }()
   |}
   in
-  let f () = exec_ast ast in
-  assert_raises (Redeclaration "i") f
+  assert_raises (Redeclaration (StringPos { row = 5; col = 13 }, "i")) f
 
 let%test_unit _ =
-  let ast = parse "{ proc() { val i } }()" in
-  let f () = exec_ast ast in
-  assert_raises (UninitializedVal "i") f
+  let f () = exec_string "{ proc() { val i } }()" in
+  assert_raises (UninitializedVal (StringPos { row = 1; col = 12 }, "i")) f
 
 let%test_unit _ =
-  let ast =
-    parse
+  let f () =
+    exec_string
       {|
     {
       proc() {
@@ -1436,38 +1364,35 @@ let%test_unit _ =
     }()
   |}
   in
-  let f () = exec_ast ast in
-  assert_raises (ImmutableAssign "i") f
+  assert_raises (ImmutableAssign (StringPos { row = 5; col = 9 }, "i")) f
 
 let%test_unit _ =
-  let ast = parse {|
+  let f () =
+    exec_string {|
     {
       proc() {
         i = 1
       }
     }()
-  |} in
-  let f () = exec_ast ast in
-  assert_raises (UnboundIdent "i") f
+  |}
+  in
+  assert_raises (UnboundIdent (StringPos { row = 4; col = 9 }, "i")) f
 
 let%test_unit _ =
-  let ast = parse "{ brk }" in
-  let f () = exec_ast ast in
-  assert_raises UnexpectedCtrl f
+  let f () = exec_string "{ brk }" in
+  assert_raises (UnexpectedCtrl (StringPos { row = 1; col = 3 })) f
 
 let%test_unit _ =
-  let ast = parse "{ ctn }" in
-  let f () = exec_ast ast in
-  assert_raises UnexpectedCtrl f
+  let f () = exec_string "{ ctn }" in
+  assert_raises (UnexpectedCtrl (StringPos { row = 1; col = 3 })) f
 
 let%test_unit _ =
-  let ast = parse "{ ret }" in
-  let f () = exec_ast ast in
-  assert_raises UnexpectedCtrl f
+  let f () = exec_string "{ ret }" in
+  assert_raises (UnexpectedCtrl (StringPos { row = 1; col = 3 })) f
 
 let%test _ =
-  let ast =
-    parse
+  Num 9
+  = exec_string
       {|
     {
       proc() {
@@ -1477,12 +1402,10 @@ let%test _ =
       }
     }()
   |}
-  in
-  Num 9 = exec_ast ast
 
 let%test_unit _ =
-  let ast =
-    parse
+  let f () =
+    exec_string
       {|
     {
       proc() {
@@ -1493,12 +1416,11 @@ let%test_unit _ =
     }()
   |}
   in
-  let f () = exec_ast ast in
-  assert_raises (InvalidField "bogus") f
+  assert_raises (InvalidField (StringPos { row = 5; col = 11 }, "bogus")) f
 
 let%test_unit _ =
-  let ast =
-    parse
+  let f () =
+    exec_string
       {|
     {
       proc() {
@@ -1509,25 +1431,21 @@ let%test_unit _ =
     }()
   |}
   in
-  let f () = exec_ast ast in
-  assert_raises (InvalidAccessee (Num 1)) f
+  assert_raises (InvalidAccessee (StringPos { row = 5; col = 9 }, Num 1)) f
 
 let%test _ =
-  let ast = parse "proc(): num" in
-  Type (Proc { arg_types = []; return_type = Num }) = exec_ast ast
+  Type (Proc { arg_types = []; return_type = Num }) = exec_string "proc(): num"
 
 let%test _ =
-  let ast = parse "proc(foo: num): num" in
   Type
     (Proc
        {
          arg_types = [ { kind = Parse.Val; name = "foo"; type' = Num } ];
          return_type = Num;
        })
-  = exec_ast ast
+  = exec_string "proc(foo: num): num"
 
 let%test _ =
-  let ast = parse "proc(mut foo: num, baz: rune): num" in
   Type
     (Proc
        {
@@ -1538,14 +1456,12 @@ let%test _ =
            ];
          return_type = Num;
        })
-  = exec_ast ast
+  = exec_string "proc(mut foo: num, baz: rune): num"
 
 let%test_unit _ =
-  let ast = parse "proc(i: num, i: num): num" in
-  let f () = exec_ast ast in
-  assert_raises (Redeclaration "i") f
+  let f () = exec_string "proc(i: num, i: num): num" in
+  assert_raises (Redeclaration (StringPos { row = 1; col = 14 }, "i")) f
 
 let%test_unit _ =
-  let ast = parse "proc(i: num)" in
-  let f () = exec_ast ast in
-  assert_raises ProcTypeWithoutReturn f
+  let f () = exec_string "proc(i: num)" in
+  assert_raises (ProcTypeWithoutReturn (StringPos { row = 1; col = 1 })) f
