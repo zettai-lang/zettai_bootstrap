@@ -870,29 +870,23 @@ let%expect_test _ =
   ): []
 |}]
 
-let intrinsics =
-  [
-    {
-      name = Some "bsPrintln";
-      entry =
-        Val
-          (Proc
-             (fun call_pos fields ->
-               match fields with
-               | [ { name = None | Some "value"; entry = Val value } ] ->
-                   let () = stringify value |> print_endline in
-                   unit_val
-               | _ -> raise (InvalidCallArgs (call_pos, [ "value" ], fields))));
-    };
-  ]
+let println =
+  Val
+    (Proc
+       (fun call_pos fields ->
+         match fields with
+         | [ { name = None | Some "value"; entry = Val value } ] ->
+             let () = stringify value |> print_endline in
+             unit_val
+         | _ -> raise (InvalidCallArgs (call_pos, [ "value" ], fields))))
 
 let builtins =
-  let builtins = StringMap.empty in
-  let builtins = StringMap.add "false" (Val (bool_from_bool false)) builtins in
-  let builtins = StringMap.add "true" (Val (bool_from_bool true)) builtins in
-  let builtins = StringMap.add "num" (Val (Type Num)) builtins in
-  let builtins = StringMap.add "rune" (Val (Type Rune)) builtins in
-  StringMap.add "intrinsics" (Val (Prod intrinsics)) builtins
+  StringMap.empty
+  |> StringMap.add "false" (Val (bool_from_bool false))
+  |> StringMap.add "true" (Val (bool_from_bool true))
+  |> StringMap.add "num" (Val (Type Num))
+  |> StringMap.add "rune" (Val (Type Rune))
+  |> StringMap.add "println" println
 
 let exec_ast ast =
   let ctrl = exec_expr ast [ ref builtins ] in
