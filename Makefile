@@ -1,8 +1,12 @@
 PWD := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+ZETTAI_INTERP := _build/install/default/bin/zettai_bootstrap
 
-.PHONY: build
-build:
-	dune build
+default: $(ZETTAI_INTERP)
+
+dune-rules.mk:
+	dune rules --makefile --recursive > dune-rules.mk
+
+-include dune-rules.mk
 
 .PHONY: test
 test:
@@ -15,9 +19,10 @@ test-coverage:
 	bisect-ppx-report summary
 
 .PHONY: functest
-functest:
-	cd functest && nix develop .# -ic $(MAKE) ZETTAI_INTERP=$(PWD)/_build/install/default/bin/zettai_bootstrap
+functest: $(ZETTAI_INTERP)
+	cd functest && nix develop .# -ic $(MAKE) ZETTAI_INTERP=$(PWD)$(ZETTAI_INTERP)
 
 .PHONY: clean
 clean:
-	rm -rf _build _coverage
+	dune clean
+	rm -rf _coverage dune-rules.mk
