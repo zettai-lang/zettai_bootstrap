@@ -16,20 +16,22 @@ type value =
   | SumVariant of sum_variant
   | Prod of prod
   | Proc of (pos -> prod -> value)
+  | Ref of ref'
   | Type of type'
 
 and scope_entry = Mut of value option ref | Val of value
 and prod_field = { name : string option; entry : scope_entry }
 and prod = prod_field list
 and sum_variant = { type' : sum_type; disc : int; field : value option }
+and ref' = Singleton of value ref | Array of value list ref
 
-(* TODO: typecheck everything *)
 and type' =
   | Num
   | Rune
   | Sum of sum_type
   | Prod of prod_field_type list
   | Proc of proc_type
+  | Ref of type'
 
 and sum_type = sum_variant_type list
 and sum_variant_type = { name : string; disc : int; field_type : type' option }
@@ -43,12 +45,12 @@ let scope_entry value = function
 exception UseBeforeInitialization of pos * string
 
 let () =
-  Printexc.register_printer (function
-    | UseBeforeInitialization (pos, name) ->
-        Some
-          (Printf.sprintf "%s: use of \"%s\" before initialization"
-             (string_of_pos pos) name)
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | UseBeforeInitialization (pos, name) ->
+      Some
+        (Printf.sprintf "%s: use of \"%s\" before initialization"
+           (string_of_pos pos) name)
+  | _ -> None
 
 let value_of_scope_entry pos name = function
   | Mut value_ref ->
@@ -56,14 +58,13 @@ let value_of_scope_entry pos name = function
           raise (UseBeforeInitialization (pos, name)))
   | Val value -> value
 
-(* TODO: replace this with a general typecheck error *)
 exception ValueAsType of pos * value
 
 let () =
-  Printexc.register_printer (function
-    | ValueAsType (pos, _) ->
-        Some (Printf.sprintf "%s: value used as type" (string_of_pos pos))
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | ValueAsType (pos, _) ->
+      Some (Printf.sprintf "%s: value used as type" (string_of_pos pos))
+  | _ -> None
 
 let expect_type pos = function
   | Type t -> t
@@ -91,31 +92,30 @@ let ( let* ) = ( >>= )
 exception NumAsArgumentName of pos
 
 let () =
-  Printexc.register_printer (function
-    | NumAsArgumentName pos ->
-        Some
-          (Printf.sprintf "%s: number specified as argument name"
-             (string_of_pos pos))
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | NumAsArgumentName pos ->
+      Some
+        (Printf.sprintf "%s: number specified as argument name"
+           (string_of_pos pos))
+  | _ -> None
 
 exception ValueAsArgument of pos
 
 let () =
-  Printexc.register_printer (function
-    | ValueAsArgument pos ->
-        Some
-          (Printf.sprintf "%s:value specified in function declaration"
-             (string_of_pos pos))
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | ValueAsArgument pos ->
+      Some
+        (Printf.sprintf "%s:value specified in function declaration"
+           (string_of_pos pos))
+  | _ -> None
 
 exception MutArgument of pos
 
 let () =
-  Printexc.register_printer (function
-    | MutArgument pos ->
-        Some
-          (Printf.sprintf "%s: argument specified as mut" (string_of_pos pos))
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | MutArgument pos ->
+      Some (Printf.sprintf "%s: argument specified as mut" (string_of_pos pos))
+  | _ -> None
 
 let rec args_names : _ Parse.prod_field list -> _ = function
   | [] -> []
@@ -136,31 +136,29 @@ exception InvalidIfCond of pos * value
 exception UninitializedVal of pos * string
 
 let () =
-  Printexc.register_printer (function
-    | UninitializedVal (pos, name) ->
-        Some
-          (Printf.sprintf "%s: uninitialized value: \"%s\"" (string_of_pos pos)
-             name)
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | UninitializedVal (pos, name) ->
+      Some
+        (Printf.sprintf "%s: uninitialized value: \"%s\"" (string_of_pos pos)
+           name)
+  | _ -> None
 
 exception UnboundIdent of pos * string
 
 let () =
-  Printexc.register_printer (function
-    | UnboundIdent (pos, name) ->
-        Some
-          (Printf.sprintf "%s: unbound ident: \"%s\"" (string_of_pos pos) name)
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | UnboundIdent (pos, name) ->
+      Some (Printf.sprintf "%s: unbound ident: \"%s\"" (string_of_pos pos) name)
+  | _ -> None
 
 exception Redeclaration of pos * string
 
 let () =
-  Printexc.register_printer (function
-    | Redeclaration (pos, name) ->
-        Some
-          (Printf.sprintf "%s: redeclaration of: \"%s\"" (string_of_pos pos)
-             name)
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | Redeclaration (pos, name) ->
+      Some
+        (Printf.sprintf "%s: redeclaration of: \"%s\"" (string_of_pos pos) name)
+  | _ -> None
 
 exception ImmutableAssign of pos * string
 exception InvalidAccessee of pos * value
@@ -169,10 +167,10 @@ exception InvalidField of pos * string
 exception InvalidCallArgs of pos * string list * prod
 
 let () =
-  Printexc.register_printer (function
-    | InvalidCallArgs (pos, _, _) ->
-        Some (Printf.sprintf "%s: invalid call args" (string_of_pos pos))
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | InvalidCallArgs (pos, _, _) ->
+      Some (Printf.sprintf "%s: invalid call args" (string_of_pos pos))
+  | _ -> None
 
 exception InvalidCallee of pos * value
 exception UnexpectedCtrl of pos
@@ -210,7 +208,9 @@ let rec exec_expr expr scopes =
       match lit with
       | Num n -> return (Num n)
       | Rune r -> return (Rune r)
-      | String _s -> raise TODO
+      | String s ->
+          let cs = List.init (String.length s) (String.get s) in
+          return (Ref (Array (ref (List.map (fun x -> Rune x) cs))))
     end
   | Id (pos, i) ->
       let entry_opt = List.find_map (( ! ) >> StringMap.find_opt i) scopes in
@@ -229,11 +229,18 @@ let rec exec_expr expr scopes =
           exec_uop operand (function
             | Num n -> return (Num (-n))
             | invalid -> raise (InvalidUnaryOperand (pos, invalid)))
+      (* TODO: Handle array refs. *)
+      | Ref -> exec_uop operand @@ fun x -> return (Ref (Singleton (ref x)))
+      | Deref ->
+          exec_uop operand (function
+            | Ref (Singleton { contents }) -> return contents
+            | Ref (Array _) -> raise TODO
+            | invalid -> raise (InvalidUnaryOperand (pos, invalid)))
     end
   | Binop (pos, lhs, binop, rhs_pos, rhs) -> begin
       let rec eq = function
         | SumVariant v1, SumVariant v2 -> begin
-            v1.type' == v2.type' && v1.disc = v2.disc
+            v1.type' = v2.type' && v1.disc = v2.disc
             &&
             match (v1.field, v2.field) with
             | Some f1, Some f2 -> eq (f1, f2)
@@ -631,6 +638,16 @@ let rec stringify value =
       let fields_string = String.concat "\n  " field_strings in
       "(\n  " ^ fields_string ^ "\n)"
   | Proc _ -> "proc(...) { ... }"
+  | Ref (Singleton { contents }) -> "&" ^ stringify contents
+  | Ref (Array { contents }) ->
+      if contents = [] then "[]"
+      else begin
+        match try_map (function Rune r -> Some r | _ -> None) contents with
+        | Some cs ->
+            let s = String.of_seq (List.to_seq cs) in
+            "\"" ^ String.escaped s ^ "\""
+        | None -> raise TODO
+      end
   | Type t -> begin
       match t with
       | Num -> "num"
@@ -684,6 +701,7 @@ let rec stringify value =
           in
           let return_type_string = stringify (Type return_type) in
           "proc" ^ arg_types_string ^ ": " ^ return_type_string
+      | Ref type' -> "&" ^ stringify (Type type')
     end
 
 let%expect_test _ =
@@ -781,6 +799,19 @@ let%expect_test _ =
 let%expect_test _ =
   stringify (Proc (fun _ _ -> unit_val)) |> print_endline;
   [%expect "proc(...) { ... }"]
+
+let%expect_test _ =
+  stringify (Ref (Singleton (ref (Num 10)))) |> print_endline;
+  [%expect "&10"]
+
+let%expect_test _ =
+  stringify (Ref (Array (ref []))) |> print_endline;
+  [%expect "[]"]
+
+let%expect_test _ =
+  stringify (Ref (Array (ref [ Rune 'a'; Rune 'b'; Rune 'c' ])))
+  |> print_endline;
+  [%expect {|"abc"|}]
 
 let%expect_test _ =
   stringify (Type Num) |> print_endline;
@@ -913,6 +944,13 @@ let exec path =
 
 let assert_raises = OUnit2.assert_raises
 let%test _ = Num 14 = exec_string "5 + 9"
+let%test _ = Rune 'c' = exec_string "'c'"
+
+let%test _ =
+  Ref (Array (ref [ Rune 'f'; Rune 'o'; Rune 'o' ])) = exec_string {|"foo"|}
+
+let%test _ = Ref (Singleton (ref (Num 50))) = exec_string "&50"
+let%test _ = Num 50 = exec_string "*&50"
 
 let%test_unit _ =
   let f () = exec_string "5 == true" in
@@ -995,12 +1033,14 @@ let%test_unit _ =
 
 let%test _ = bool_from_bool true = exec_string "!false"
 let%test _ = bool_from_bool false = exec_string "!true"
+let%test _ = bool_from_bool false = exec_string "!!!true"
 
 let%test_unit _ =
   let f () = exec_string "!5" in
   assert_raises (InvalidUnaryOperand (StringPos { row = 1; col = 1 }, Num 5)) f
 
 let%test _ = Num (-5) = exec_string "-5"
+let%test _ = Num 5 = exec_string "--5"
 
 let%test_unit _ =
   let f () = exec_string "-false" in

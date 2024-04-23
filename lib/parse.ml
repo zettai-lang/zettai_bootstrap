@@ -10,7 +10,7 @@ type lit = Num of int | Rune of char | String of string
 [@@deriving show, variants]
 
 type name_or_count = Name of string | Count of int [@@deriving show, variants]
-type uop = Not | UnaryMins [@@deriving show]
+type uop = Not | UnaryMins | Ref | Deref [@@deriving show]
 
 type binop =
   | Plus
@@ -281,10 +281,12 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
             repeat
               (token '!' @> return Not
               <|> token '-' @> return UnaryMins
+              <|> token '&' @> return Ref
+              <|> token '*' @> return Deref
               |> pos <* skip_space)
           in
           let+ expr = call_expr in
-          List.fold_left (fun expr (p, uop) -> Uop (p, uop, expr)) expr uops
+          List.fold_right (fun (p, uop) expr -> Uop (p, uop, expr)) uops expr
         in
         let* p, lhs1 = uop_expr |> pos in
         let+ rest =
@@ -316,9 +318,9 @@ end
 exception ParseError of string
 
 let () =
-  Printexc.register_printer (function
-    | ParseError msg -> Some (Printf.sprintf "parse error: %s" msg)
-    | _ -> None)
+  Printexc.register_printer @@ function
+  | ParseError msg -> Some (Printf.sprintf "parse error: %s" msg)
+  | _ -> None
 
 let parse path =
   let open Parser (Starpath.FileCombinators) in
@@ -402,6 +404,32 @@ let%expect_test _ =
     (Parse.Uop (
        { Starpath.row = 1; col = 1 }, Parse.UnaryMins,
          (Parse.Id ({ Starpath.row = 1; col = 3 }, "foo")))) |}]
+
+let%expect_test _ =
+  dump "&foo";
+  [%expect
+    {|
+    (Parse.Uop (
+       { Starpath.row = 1; col = 1 }, Parse.Ref,
+         (Parse.Id ({ Starpath.row = 1; col = 2 }, "foo")))) |}]
+
+let%expect_test _ =
+  dump "*foo";
+  [%expect
+    {|
+    (Parse.Uop (
+       { Starpath.row = 1; col = 1 }, Parse.Deref,
+         (Parse.Id ({ Starpath.row = 1; col = 2 }, "foo")))) |}]
+
+let%expect_test _ =
+  dump "*&foo";
+  [%expect
+    {|
+    (Parse.Uop (
+       { Starpath.row = 1; col = 1 }, Parse.Deref,
+         (Parse.Uop (
+            { Starpath.row = 1; col = 2 }, Parse.Ref,
+              (Parse.Id ({ Starpath.row = 1; col = 3 }, "foo")))))) |}]
 
 let%expect_test _ =
   dump "if a then b";
