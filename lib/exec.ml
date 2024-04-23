@@ -913,6 +913,16 @@ let println =
              unit_val
          | _ -> raise (InvalidCallArgs (call_pos, [ "value" ], fields))))
 
+exception OutOfBounds of pos * int * int
+
+let () =
+  Printexc.register_printer @@ function
+  | OutOfBounds (pos, index, length) ->
+      Some
+        (Printf.sprintf "%s: out of bounds at index %d of %d element array"
+           (string_of_pos pos) index length)
+  | _ -> None
+
 let _get =
   Val
     (Proc
@@ -928,8 +938,12 @@ let _get =
                entry = Val (Ref (Array { contents }));
              };
              { name = Some "index"; entry = Val (Num index) };
-           ] ->
-             List.nth contents index
+           ] -> begin
+             match List.nth_opt contents index with
+             | Some value -> value
+             | None ->
+                 raise (OutOfBounds (call_pos, index, List.length contents))
+           end
          | _ -> raise (InvalidCallArgs (call_pos, [ "array"; "index" ], fields))))
 
 let _len =
