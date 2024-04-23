@@ -913,6 +913,25 @@ let println =
              unit_val
          | _ -> raise (InvalidCallArgs (call_pos, [ "value" ], fields))))
 
+let _get =
+  Val
+    (Proc
+       (fun call_pos fields ->
+         match fields with
+         | [
+             { name = None; entry = Val (Ref (Array { contents })) };
+             { name = None; entry = Val (Num index) };
+           ]
+         | [
+             {
+               name = None | Some "array";
+               entry = Val (Ref (Array { contents }));
+             };
+             { name = Some "index"; entry = Val (Num index) };
+           ] ->
+             List.nth contents index
+         | _ -> raise (InvalidCallArgs (call_pos, [ "array"; "index" ], fields))))
+
 let builtins =
   StringMap.empty
   |> StringMap.add "false" (Val (bool_from_bool false))
@@ -920,6 +939,7 @@ let builtins =
   |> StringMap.add "num" (Val (Type Num))
   |> StringMap.add "rune" (Val (Type Rune))
   |> StringMap.add "println" println
+  |> StringMap.add "_get" _get
 
 let _args args = Val (Ref (Array (ref (List.map ref_array_of_string args))))
 
@@ -955,6 +975,7 @@ let%test _ = Rune 'c' = exec_string "'c'"
 let%test _ =
   Ref (Array (ref [ Rune 'f'; Rune 'o'; Rune 'o' ])) = exec_string {|"foo"|}
 
+let%test _ = Rune 'o' = exec_string {|_get("foo", 1)|}
 let%test _ = Ref (Singleton (ref (Num 50))) = exec_string "&50"
 let%test _ = Num 50 = exec_string "*&50"
 
