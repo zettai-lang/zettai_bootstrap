@@ -968,13 +968,19 @@ let exec_string s =
   exec_ast ast []
 
 exception ExpectedProc
+exception UnexpectedReturnValue
 
 let exec path args =
   let ast = Parse.parse path in
   let ast = Parse.map_ast (fun pos -> FilePos pos) ast in
   let _ =
     match exec_ast ast args with
-    | Proc f -> f (FilePos (Starpath.FilePos.pos0 path)) []
+    | Proc f -> begin
+        match f (FilePos (Starpath.FilePos.pos0 path)) [] with
+        | Num n -> exit n
+        | v when v = unit_val -> ()
+        | _ -> raise UnexpectedReturnValue
+      end
     | _ -> raise ExpectedProc
   in
   ()
