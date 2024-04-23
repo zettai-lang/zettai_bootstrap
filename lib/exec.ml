@@ -198,6 +198,10 @@ let bool_not { disc; _ } = bool_from_bool (disc = bool_type_disc_false)
 exception ProcTypeWithoutReturn of pos
 exception Unreachable
 
+let ref_array_of_string s =
+  let cs = List.init (String.length s) (String.get s) in
+  Ref (Array (ref (List.map (fun x -> Rune x) cs)))
+
 let rec exec_expr expr scopes =
   let exec_binop = exec_binop scopes in
   let exec_uop = exec_uop scopes in
@@ -208,9 +212,7 @@ let rec exec_expr expr scopes =
       match lit with
       | Num n -> return (Num n)
       | Rune r -> return (Rune r)
-      | String s ->
-          let cs = List.init (String.length s) (String.get s) in
-          return (Ref (Array (ref (List.map (fun x -> Rune x) cs))))
+      | String s -> return (ref_array_of_string s)
     end
   | Id (pos, i) ->
       let entry_opt = List.find_map (( ! ) >> StringMap.find_opt i) scopes in
@@ -919,8 +921,12 @@ let builtins =
   |> StringMap.add "rune" (Val (Type Rune))
   |> StringMap.add "println" println
 
-let exec_ast ast =
-  let ctrl = exec_expr ast [ ref builtins ] in
+let _args args = Val (Ref (Array (ref (List.map ref_array_of_string args))))
+
+let exec_ast ast args =
+  let ctrl =
+    exec_expr ast [ builtins |> StringMap.add "_args" (_args args) |> ref ]
+  in
   match ctrl with
   | None value -> value
   | Brk pos | Ctn pos | Ret (pos, _) -> raise (UnexpectedCtrl pos)
@@ -928,15 +934,15 @@ let exec_ast ast =
 let exec_string s =
   let ast = Parse.parse_string s in
   let ast = Parse.map_ast (fun pos -> StringPos pos) ast in
-  exec_ast ast
+  exec_ast ast []
 
 exception ExpectedProc
 
-let exec path =
+let exec path args =
   let ast = Parse.parse path in
   let ast = Parse.map_ast (fun pos -> FilePos pos) ast in
   let _ =
-    match exec_ast ast with
+    match exec_ast ast args with
     | Proc f -> f (FilePos (Starpath.FilePos.pos0 path)) []
     | _ -> raise ExpectedProc
   in

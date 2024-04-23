@@ -23,4 +23,4 @@ let file =
       Arg.usage speclist usage;
       exit 2
 
-let () = Zettai_bootstrap.Exec.exec file
+let () = Zettai_bootstrap.Exec.exec file !args
