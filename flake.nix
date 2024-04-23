@@ -35,7 +35,7 @@
                 ocamlPackages.starpath
               ];
 
-              src = builtins.path { path = ./..; name = "zettai_bootstrap-src"; };
+              src = builtins.path { path = ./.; name = "zettai_bootstrap-src"; };
             })
           { };
       };
