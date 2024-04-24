@@ -335,17 +335,19 @@ let () =
   | ParseError msg -> Some (Printf.sprintf "parse error: %s" msg)
   | _ -> None
 
+let preprocess = Str.global_replace (Str.regexp "#.*$") ""
+
 let parse path =
   let open Parser (Starpath.FileCombinators) in
   let open Starpath.FileCombinators in
-  match parse_file path ast with
+  match parse_file path ~preprocess ast with
   | Ok ast -> ast
   | Error s -> raise (ParseError (string_of_parse_error s))
 
 let parse_string s =
   let open Parser (Starpath.StringCombinators) in
   let open Starpath.StringCombinators in
-  match parse_string s ast with
+  match parse_string (preprocess s) ast with
   | Ok ast -> ast
   | Error s -> raise (ParseError (string_of_parse_error s))
 
@@ -811,9 +813,11 @@ let%expect_test _ =
 let%expect_test _ =
   dump
     {|
+  # comment
   {
-    val i: int = 0
+    val i: int = 0 #    another comment
     mut j
+    #yet another comment
     loop { }
     ret bool
     j = i
@@ -824,32 +828,32 @@ let%expect_test _ =
     {|
     (Parse.Block
        [(Parse.Decl (
-           { Starpath.row = 3; col = 5 },
+           { Starpath.row = 4; col = 5 },
              { Parse.kind = Parse.Val;
                name =
-               ({ Starpath.row = 3; col = 9 }, "i");
+               ({ Starpath.row = 4; col = 9 }, "i");
                 type' =
-                (Some (Parse.Id ({ Starpath.row = 3; col = 12 }, "int")));
+                (Some (Parse.Id ({ Starpath.row = 4; col = 12 }, "int")));
                          value = (Some (Parse.Lit (Parse.Num 0))) }
                 ));
                 (Parse.Decl (
-                   { Starpath.row = 4; col = 5 },
+                   { Starpath.row = 5; col = 5 },
                      { Parse.kind = Parse.Mut;
                        name =
-                       ({ Starpath.row = 4; col = 9 }, "j"); type' = None;
+                       ({ Starpath.row = 5; col = 9 }, "j"); type' = None;
                         value = None }
                        )); (Parse.Loop (Parse.Block []));
                        (Parse.Ret (
-                          { Starpath.row = 6; col = 5 },
+                          { Starpath.row = 8; col = 5 },
                             (Some (Parse.Id (
-                                     { Starpath.row = 6; col = 9 }, "bool")))));
+                                     { Starpath.row = 8; col = 9 }, "bool")))));
                                      (Parse.Assign
                                         { Parse.assignee =
                                           (Parse.Id (
-                                             { Starpath.row = 7; col = 5 }, "j"));
+                                             { Starpath.row = 9; col = 5 }, "j"));
                                              value =
                                              (Parse.Id (
-                                                { Starpath.row = 7; col = 9 },
+                                                { Starpath.row = 9; col = 9 },
                                                   "i"))
                                                 });
                                              (Parse.Expr

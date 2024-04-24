@@ -6,7 +6,7 @@
 (library
  (name zettai_bootstrap)
  (public_name zettai_bootstrap)
- (libraries ounit2 starpath)
+ (libraries ounit2 starpath str)
  (instrumentation
   (backend bisect_ppx))
  (inline_tests)
