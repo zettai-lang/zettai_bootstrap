@@ -952,10 +952,17 @@ let%expect_test _ =
   ): []
 |}]
 
+exception ImportInExecString of pos
+
 let import exec_ast args =
   Val
     (Proc
        (fun call_pos fields ->
+         let call_dir =
+           match call_pos with
+           | StringPos _ -> raise (ImportInExecString call_pos)
+           | FilePos { path; _ } -> Filename.dirname path
+         in
          let invalid_call_args =
            InvalidCallArgs (call_pos, [ "path" ], fields)
          in
@@ -963,11 +970,11 @@ let import exec_ast args =
          | [
           { name = None | Some "path"; entry = Val (Ref (Array { contents })) };
          ] ->
-             let path =
+             let relative_path =
                get_or_else (string_of_char_ref_array contents) (fun () ->
                    raise invalid_call_args)
              in
-             let ast = Parse.parse path in
+             let ast = Parse.parse (Filename.concat call_dir relative_path) in
              let ast = Parse.map_ast (fun pos -> FilePos pos) ast in
              exec_ast ast args
          | _ -> raise invalid_call_args))
