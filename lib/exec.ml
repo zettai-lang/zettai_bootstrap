@@ -448,9 +448,9 @@ and exec_sum variants scopes =
 
 and exec_prod pos fields scopes : (prod, type') Either.t ctrl =
   let fields' =
-    Option.map (( <$> ) (snd >> Either.left))
+    Option.map (( <$> ) (fun (_, fields, _) -> Either.Left fields))
     @@ try_fold_left_ctrl
-         (fun (prev_kind, fields) (field : _ Parse.prod_field) ->
+         (fun (prev_kind, fields, scope) (field : _ Parse.prod_field) ->
            match field with
            | Parse.Decl
                {
@@ -463,7 +463,7 @@ and exec_prod pos fields scopes : (prod, type') Either.t ctrl =
                  (let kind =
                     Option.value (Option.map snd kind) ~default:prev_kind
                   in
-                  let+ value = exec_expr value scopes in
+                  let+ value = exec_expr value (ref scope :: scopes) in
                   let () =
                     match
                       List.find_opt (( = ) name)
@@ -472,18 +472,20 @@ and exec_prod pos fields scopes : (prod, type') Either.t ctrl =
                     | Some name -> raise (Redeclaration (name_pos, name))
                     | None -> ()
                   in
-                  let name = Some name in
                   let entry = scope_entry value kind in
-                  (kind, fields @ [ { name; entry } ]))
+                  let scope = StringMap.add name entry scope in
+                  let name = Some name in
+                  (kind, fields @ [ { name; entry } ], scope))
            | Decl { value = None; _ } -> None
            | Value (_, value) ->
                Some
-                 (let+ value = exec_expr value scopes in
+                 (let+ value = exec_expr value (ref scope :: scopes) in
                   let name = Option.None in
                   let entry = scope_entry value prev_kind in
-                  (prev_kind, fields @ [ { name; entry } ]))
+                  (prev_kind, fields @ [ { name; entry } ], scope))
            | _ -> raise TODO)
-         (Parse.Val, []) fields
+         (Parse.Val, [], StringMap.empty)
+         fields
   in
   get_or_else fields' @@ fun () ->
   let prod_type =
@@ -1660,3 +1662,5 @@ let%test_unit _ =
 let%test_unit _ =
   let f () = exec_string "proc(i: num)" in
   assert_raises (ProcTypeWithoutReturn (StringPos { row = 1; col = 1 })) f
+
+let%test _ = Num (5 + 3) = exec_string "(foo = 5, bar = foo + 3).bar"
