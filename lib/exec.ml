@@ -87,7 +87,9 @@ let ( >>= ) ctrl f =
   | Ret (pos, value) -> Ret (pos, value)
   | None a -> f a
 
+let ( <$> ) : 'a 'b. _ = fun f ctrl -> ctrl >>= (f >> return)
 let ( let* ) = ( >>= )
+let ( let+ ) : 'a 'b. _ = fun ctrl f -> f <$> ctrl
 
 let rec fold_left_ctrl f init = function
   | [] -> return init
@@ -95,12 +97,22 @@ let rec fold_left_ctrl f init = function
       let* y = f init x in
       fold_left_ctrl f y xs
 
+let rec try_fold_left_ctrl f init : _ -> _ option = function
+  | [] -> Some (return init)
+  | x :: xs -> begin
+      Option.bind (f init x) @@ function
+      | Brk pos -> Some (Brk pos)
+      | Ctn pos -> Some (Ctn pos)
+      | Ret (pos, value) -> Some (Ret (pos, value))
+      | None y -> try_fold_left_ctrl f y xs
+    end
+
 let rec map_ctrl f = function
   | [] -> return []
   | x :: xs ->
       let* y = f x in
-      let* ys = map_ctrl f xs in
-      return (y :: ys)
+      let+ ys = map_ctrl f xs in
+      y :: ys
 
 exception NumAsArgumentName of pos
 
@@ -220,6 +232,8 @@ let string_of_char_ref_array cs =
     (List.to_seq >> String.of_seq)
     (try_map (function Rune r -> Some r | _ -> None) cs)
 
+exception NeitherValueNorTypeProd of pos
+
 let rec exec_expr expr scopes =
   let exec_binop = exec_binop scopes in
   let exec_uop = exec_uop scopes in
@@ -299,14 +313,14 @@ let rec exec_expr expr scopes =
             | Id (pos, i) -> (pos, i)
             | _ -> raise (InvalidAccessor rhs_pos)
           in
-          let* ctrl = exec_expr lhs scopes in
+          let+ ctrl = exec_expr lhs scopes in
           match ctrl with
           | Prod fields -> begin
               match
                 List.find_opt (fun { name; _ } -> name = Some accessor) fields
               with
               | Some { entry; _ } ->
-                  return (value_of_scope_entry accessor_pos accessor entry)
+                  value_of_scope_entry accessor_pos accessor entry
               | None -> raise (InvalidField (accessor_pos, accessor))
             end
           | Type (Sum type') -> (
@@ -316,18 +330,16 @@ let rec exec_expr expr scopes =
                   type'
               with
               | Some { disc; field_type = None; _ } ->
-                  return (SumVariant { type'; disc; field = None })
+                  SumVariant { type'; disc; field = None }
               | Some { disc; field_type = Some _; _ } ->
-                  return
-                    (Proc
-                       (fun call_pos fields ->
-                         match fields with
-                         | [ { name = None | Some "value"; entry = Val value } ]
-                           ->
-                             SumVariant { type'; disc; field = Some value }
-                         | _ ->
-                             raise
-                               (InvalidCallArgs (call_pos, [ "value" ], fields))))
+                  Proc
+                    (fun call_pos fields ->
+                      match fields with
+                      | [ { name = None | Some "value"; entry = Val value } ] ->
+                          SumVariant { type'; disc; field = Some value }
+                      | _ ->
+                          raise
+                            (InvalidCallArgs (call_pos, [ "value" ], fields)))
               | None -> raise (InvalidField (accessor_pos, accessor)))
           | invalid -> raise (InvalidAccessee (pos, invalid))
         end
@@ -347,11 +359,14 @@ let rec exec_expr expr scopes =
       | cond -> raise (InvalidIfCond (cond_pos, cond))
     end
   | Sum variants -> exec_sum variants scopes
-  | Prod fields ->
-      let* fields = exec_prod fields scopes in
-      return (Prod fields)
+  | Prod (pos, fields) -> begin
+      let+ res = exec_prod pos fields scopes in
+      match res with
+      | Either.Left fields -> Prod fields
+      | Right prod_type -> Type prod_type
+    end
   | Block stmts -> exec_block scopes stmts
-  | Proc { type' = { args; _ }; body } ->
+  | Proc { type' = { args = _, args; _ }; body } ->
       let expected = args_names args in
       return
         (Proc
@@ -378,25 +393,30 @@ let rec exec_expr expr scopes =
              | None value -> value
              | Brk pos | Ctn pos -> raise (UnexpectedCtrl pos)
              | Ret (_, value) -> Option.value value ~default:unit_val))
-  | ProcT (_, { args; return_type = Some (return_type_pos, return_type) }) ->
+  | ProcT
+      (_, { args = _, args; return_type = Some (return_type_pos, return_type) })
+    ->
       let* arg_types = exec_arg_types args scopes in
-      let* return_type_val = exec_expr return_type scopes in
+      let+ return_type_val = exec_expr return_type scopes in
       let return_type = expect_type return_type_pos return_type_val in
-      return (Type (Proc { arg_types; return_type }))
+      Type (Proc { arg_types; return_type })
   | ProcT (pos, { return_type = None; _ }) -> raise (ProcTypeWithoutReturn pos)
   | Call (pos, { callee; args }) -> begin
       let* callee = exec_expr callee scopes in
       match callee with
-      | Proc f ->
-          let* args = exec_prod args scopes in
-          return (f pos args)
+      | Proc f -> begin
+          let+ res = exec_prod pos args scopes in
+          match res with
+          | Either.Left args -> f pos args
+          | Right _ -> raise TODO
+        end
       | invalid -> raise (InvalidCallee (pos, invalid))
     end
 
 and exec_binop scopes lhs rhs op =
   let* lhs = exec_expr lhs scopes in
-  let* rhs = exec_expr rhs scopes in
-  return (op (lhs, rhs))
+  let+ rhs = exec_expr rhs scopes in
+  op (lhs, rhs)
 
 and exec_num_binop scopes pos lhs rhs op =
   exec_binop scopes lhs rhs @@ function
@@ -419,47 +439,94 @@ and exec_sum variants scopes =
       let disc = Oo.id (object end) in
       match value with
       | Some (field_type_pos, field_type) ->
-          let* field_type = exec_expr field_type scopes in
+          let+ field_type = exec_expr field_type scopes in
           let field_type = Some (expect_type field_type_pos field_type) in
-          return { name; disc; field_type }
+          { name; disc; field_type }
       | None -> return { name; disc; field_type = None })
     variants
   >>= fun variants -> return (Type (Sum variants))
 
-and exec_prod fields scopes =
-  let* _, fields =
-    fold_left_ctrl
-      (fun (prev_kind, fields) (field : _ Parse.prod_field) ->
-        match field with
-        | Parse.Decl
-            { kind; name_or_count = name_pos, Name name; value = Some value; _ }
-          -> begin
-            let kind = Option.value (Option.map snd kind) ~default:prev_kind in
-            let* value = exec_expr value scopes in
-            let () =
-              match
-                List.find_opt (( = ) name)
-                  (List.filter_map (fun { name; _ } -> name) fields)
-              with
-              | Some name -> raise (Redeclaration (name_pos, name))
-              | None -> ()
-            in
-            let name = Some name in
-            let entry = scope_entry value kind in
-            return (kind, fields @ [ { name; entry } ])
-          end
-        | Value (_, value) ->
-            let* value = exec_expr value scopes in
-            let name = Option.None in
-            let entry = scope_entry value prev_kind in
-            return (prev_kind, fields @ [ { name; entry } ])
-        | _ -> raise TODO)
-      (Parse.Val, []) fields
+and exec_prod pos fields scopes : (prod, type') Either.t ctrl =
+  let fields' =
+    Option.map (( <$> ) (snd >> Either.left))
+    @@ try_fold_left_ctrl
+         (fun (prev_kind, fields) (field : _ Parse.prod_field) ->
+           match field with
+           | Parse.Decl
+               {
+                 kind;
+                 name_or_count = name_pos, Name name;
+                 value = Some value;
+                 _;
+               } ->
+               Some
+                 (let kind =
+                    Option.value (Option.map snd kind) ~default:prev_kind
+                  in
+                  let+ value = exec_expr value scopes in
+                  let () =
+                    match
+                      List.find_opt (( = ) name)
+                        (List.filter_map (fun { name; _ } -> name) fields)
+                    with
+                    | Some name -> raise (Redeclaration (name_pos, name))
+                    | None -> ()
+                  in
+                  let name = Some name in
+                  let entry = scope_entry value kind in
+                  (kind, fields @ [ { name; entry } ]))
+           | Decl { value = None; _ } -> None
+           | Value (_, value) ->
+               Some
+                 (let+ value = exec_expr value scopes in
+                  let name = Option.None in
+                  let entry = scope_entry value prev_kind in
+                  (prev_kind, fields @ [ { name; entry } ]))
+           | _ -> raise TODO)
+         (Parse.Val, []) fields
   in
-  return fields
+  get_or_else fields' @@ fun () ->
+  let prod_type =
+    Option.map
+      (( <$> ) (fun x : (_, type') Either.t ->
+           let field_types = snd x in
+           Either.Right (Prod field_types)))
+    @@ try_fold_left_ctrl
+         (fun (prev_kind, fields) (field : _ Parse.prod_field) ->
+           match field with
+           | Parse.Decl { value = Some _; _ } -> None
+           | Decl
+               {
+                 kind;
+                 name_or_count = name_pos, Name name;
+                 type' = Some (type_pos, type');
+                 value = None;
+               } ->
+               Some
+                 (let kind =
+                    Option.value (Option.map snd kind) ~default:prev_kind
+                  in
+                  let () =
+                    match
+                      List.find_opt (( = ) name)
+                        (List.map
+                           (fun ({ name; _ } : prod_field_type) -> name)
+                           fields)
+                    with
+                    | Some name -> raise (Redeclaration (name_pos, name))
+                    | None -> ()
+                  in
+                  let+ type' = exec_expr type' scopes in
+                  let type' = expect_type type_pos type' in
+                  (kind, fields @ [ { kind; name; type' } ]))
+           | Value _ -> None
+           | _ -> raise TODO)
+         (Parse.Val, []) fields
+  in
+  get_or_else prod_type @@ fun () -> raise (NeitherValueNorTypeProd pos)
 
 and exec_arg_types args scopes =
-  let* _, args =
+  let+ _, args =
     fold_left_ctrl
       (fun (prev_kind, args) (arg : _ Parse.prod_field) ->
         match arg with
@@ -471,7 +538,7 @@ and exec_arg_types args scopes =
               value = None;
             } ->
             let kind = Option.value (Option.map snd kind) ~default:prev_kind in
-            let* type_val = exec_expr type' scopes in
+            let+ type_val = exec_expr type' scopes in
             let () =
               match
                 List.find_opt
@@ -483,20 +550,20 @@ and exec_arg_types args scopes =
               | None -> ()
             in
             let type' = expect_type type_pos type_val in
-            return (kind, args @ [ { kind; name; type' } ])
+            (kind, args @ [ { kind; name; type' } ])
         | _ -> raise TODO)
       (Parse.Val, []) args
   in
-  return args
+  args
 
 and exec_block scopes = function
   | [ Expr expr ] -> exec_expr expr (ref StringMap.empty :: scopes)
   | [ stmt ] ->
-      let* _ = exec_stmt stmt (ref StringMap.empty :: scopes) in
-      return unit_val
+      let+ _ = exec_stmt stmt (ref StringMap.empty :: scopes) in
+      unit_val
   | stmts ->
-      let* _ = exec_nonsingle_block stmts (ref StringMap.empty :: scopes) in
-      return unit_val
+      let+ _ = exec_nonsingle_block stmts (ref StringMap.empty :: scopes) in
+      unit_val
 
 and exec_nonsingle_block stmts scopes =
   match stmts with
@@ -520,7 +587,7 @@ and exec_stmt stmt scopes =
   | Decl (decl_pos, { kind; name = name_pos, name; value; _ }) -> begin
       match (kind, value) with
       | _, Some value ->
-          let* value = exec_expr value scopes in
+          let+ value = exec_expr value scopes in
           let entry = scope_entry value kind in
           let scope = List.hd scopes in
           let () =
@@ -529,7 +596,7 @@ and exec_stmt stmt scopes =
             | None -> ()
           in
           scope := StringMap.add name entry !scope;
-          return ()
+          ()
       | Mut, None ->
           let scope = List.hd scopes in
           let () =
@@ -545,9 +612,9 @@ and exec_stmt stmt scopes =
       let try_scope_entry_assign pos name assignee' scopes =
         match assignee' with
         | Mut value_ref ->
-            let* value = exec_expr value scopes in
+            let+ value = exec_expr value scopes in
             value_ref := Some value;
-            return ()
+            ()
         | _ -> raise (ImmutableAssign (pos, name))
       in
       match assignee with
@@ -575,8 +642,8 @@ and exec_stmt stmt scopes =
     end
   | Loop body -> exec_loop body scopes
   | Expr expr ->
-      let* _ = exec_expr expr scopes in
-      return ()
+      let+ _ = exec_expr expr scopes in
+      ()
 
 and exec_loop body scopes =
   match exec_expr body scopes with
@@ -1214,7 +1281,7 @@ let%test_unit _ =
   let f () = exec_string "1.i" in
   assert_raises (InvalidAccessee (StringPos { row = 1; col = 1 }, Num 1)) f
 
-let%test _ = match exec_string "[]" with Type (Sum []) -> true | _ -> false
+let%test _ = Type (Sum []) = exec_string "[]"
 
 let%test _ =
   match exec_string "[Red, Green(num), Blue(rune)]" with
@@ -1301,6 +1368,10 @@ let%test _ =
 let%test_unit _ =
   let f () = exec_string "[Blue(5)]" in
   assert_raises (ValueAsType (StringPos { row = 1; col = 7 }, Num 5)) f
+
+let%test _ =
+  Type (Prod [ { kind = Parse.Val; name = "foo"; type' = Num } ])
+  = exec_string "(foo: num)"
 
 let%test _ = unit_val = exec_string "{ proc() { } }()"
 let%test _ = Num 3 = exec_string "{ proc(val i: Nat) { i + 1 } }(2)"
