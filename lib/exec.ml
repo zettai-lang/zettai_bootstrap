@@ -906,6 +906,26 @@ let%expect_test _ =
   ): []
 |}]
 
+let import exec_ast args =
+  Val
+    (Proc
+       (fun call_pos fields ->
+         let invalid_call_args =
+           InvalidCallArgs (call_pos, [ "path" ], fields)
+         in
+         match fields with
+         | [
+          { name = None | Some "path"; entry = Val (Ref (Array { contents })) };
+         ] ->
+             let path =
+               get_or_else (string_of_char_ref_array contents) (fun () ->
+                   raise invalid_call_args)
+             in
+             let ast = Parse.parse path in
+             let ast = Parse.map_ast (fun pos -> FilePos pos) ast in
+             exec_ast ast args
+         | _ -> raise invalid_call_args))
+
 let println =
   Val
     (Proc
@@ -981,22 +1001,22 @@ let _read_file =
              ref_array_of_string s
          | _ -> raise invalid_call_args))
 
-let builtins =
-  StringMap.empty
-  |> StringMap.add "false" (Val (bool_from_bool false))
-  |> StringMap.add "true" (Val (bool_from_bool true))
-  |> StringMap.add "num" (Val (Type Num))
-  |> StringMap.add "rune" (Val (Type Rune))
-  |> StringMap.add "println" println
-  |> StringMap.add "_get" _get |> StringMap.add "_len" _len
-  |> StringMap.add "_read_file" _read_file
-
 let _args args = Val (Ref (Array (ref (List.map ref_array_of_string args))))
 
-let exec_ast ast args =
-  let ctrl =
-    exec_expr ast [ builtins |> StringMap.add "_args" (_args args) |> ref ]
+let rec exec_ast ast args =
+  let builtins =
+    StringMap.empty
+    |> StringMap.add "false" (Val (bool_from_bool false))
+    |> StringMap.add "true" (Val (bool_from_bool true))
+    |> StringMap.add "num" (Val (Type Num))
+    |> StringMap.add "rune" (Val (Type Rune))
+    |> StringMap.add "println" println
+    |> StringMap.add "import" (import exec_ast args)
+    |> StringMap.add "_args" (_args args)
+    |> StringMap.add "_get" _get |> StringMap.add "_len" _len
+    |> StringMap.add "_read_file" _read_file
   in
+  let ctrl = exec_expr ast [ ref builtins ] in
   match ctrl with
   | None value -> value
   | Brk pos | Ctn pos | Ret (pos, _) -> raise (UnexpectedCtrl pos)
