@@ -1014,7 +1014,7 @@ let rec exec_ast ast args =
     |> StringMap.add "import" (import exec_ast args)
     |> StringMap.add "_args" (_args args)
     |> StringMap.add "_get" _get |> StringMap.add "_len" _len
-    |> StringMap.add "_read_file" _read_file
+    |> StringMap.add "_readFile" _read_file
   in
   let ctrl = exec_expr ast [ ref builtins ] in
   match ctrl with
