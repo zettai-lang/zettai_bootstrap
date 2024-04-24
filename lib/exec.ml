@@ -89,6 +89,19 @@ let ( >>= ) ctrl f =
 
 let ( let* ) = ( >>= )
 
+let rec fold_left_ctrl f init = function
+  | [] -> return init
+  | x :: xs ->
+      let* y = f init x in
+      fold_left_ctrl f y xs
+
+let rec map_ctrl f = function
+  | [] -> return []
+  | x :: xs ->
+      let* y = f x in
+      let* ys = map_ctrl f xs in
+      return (y :: ys)
+
 exception NumAsArgumentName of pos
 
 let () =
@@ -401,114 +414,80 @@ and exec_bool_binop scopes pos lhs rhs op =
 and exec_uop scopes operand op = exec_expr operand scopes >>= op
 
 and exec_sum variants scopes =
-  List.fold_left
-    (fun ctrl ({ name; value } : _ Parse.sum_var) ->
-      let* variants = ctrl in
+  map_ctrl
+    (fun ({ name; value } : _ Parse.sum_var) ->
       let disc = Oo.id (object end) in
       match value with
       | Some (field_type_pos, field_type) ->
           let* field_type = exec_expr field_type scopes in
           let field_type = Some (expect_type field_type_pos field_type) in
-          return (variants @ [ { name; disc; field_type } ])
-      | None -> return (variants @ [ { name; disc; field_type = None } ]))
-    (return []) variants
+          return { name; disc; field_type }
+      | None -> return { name; disc; field_type = None })
+    variants
   >>= fun variants -> return (Type (Sum variants))
 
 and exec_prod fields scopes =
-  List.fold_left
-    (fun (prev_kind, ctrl) (field : _ Parse.prod_field) ->
-      match ctrl with
-      | None fields -> begin
-          match field with
-          | Parse.Decl
-              {
-                kind;
-                name_or_count = name_pos, Name name;
-                value = Some value;
-                _;
-              } -> begin
-              let kind =
-                Option.value (Option.map snd kind) ~default:prev_kind
-              in
-              let ctrl = exec_expr value scopes in
-              let () =
-                match
-                  List.find_opt (( = ) name)
-                    (List.filter_map (fun { name; _ } -> name) fields)
-                with
-                | Some name -> raise (Redeclaration (name_pos, name))
-                | None -> ()
-              in
-              match ctrl with
-              | None value ->
-                  let name = Some name in
-                  let entry = scope_entry value kind in
-                  (kind, return (fields @ [ { name; entry } ]))
-              | Brk pos -> (kind, Brk pos)
-              | Ctn pos -> (kind, Ctn pos)
-              | Ret (pos, value) -> (kind, Ret (pos, value))
-            end
-          | Value (_, value) -> (
-              let ctrl = exec_expr value scopes in
-              match ctrl with
-              | None value ->
-                  let name = Option.None in
-                  let entry = scope_entry value prev_kind in
-                  (prev_kind, return (fields @ [ { name; entry } ]))
-              | Brk pos -> (prev_kind, Brk pos)
-              | Ctn pos -> (prev_kind, Ctn pos)
-              | Ret (pos, value) -> (prev_kind, Ret (pos, value)))
-          | _ -> raise TODO
-        end
-      | Brk pos -> (prev_kind, Brk pos)
-      | Ctn pos -> (prev_kind, Ctn pos)
-      | Ret (pos, value) -> (prev_kind, Ret (pos, value)))
-    (Parse.Val, return [])
-    fields
-  |> snd
+  let* _, fields =
+    fold_left_ctrl
+      (fun (prev_kind, fields) (field : _ Parse.prod_field) ->
+        match field with
+        | Parse.Decl
+            { kind; name_or_count = name_pos, Name name; value = Some value; _ }
+          -> begin
+            let kind = Option.value (Option.map snd kind) ~default:prev_kind in
+            let* value = exec_expr value scopes in
+            let () =
+              match
+                List.find_opt (( = ) name)
+                  (List.filter_map (fun { name; _ } -> name) fields)
+              with
+              | Some name -> raise (Redeclaration (name_pos, name))
+              | None -> ()
+            in
+            let name = Some name in
+            let entry = scope_entry value kind in
+            return (kind, fields @ [ { name; entry } ])
+          end
+        | Value (_, value) ->
+            let* value = exec_expr value scopes in
+            let name = Option.None in
+            let entry = scope_entry value prev_kind in
+            return (prev_kind, fields @ [ { name; entry } ])
+        | _ -> raise TODO)
+      (Parse.Val, []) fields
+  in
+  return fields
 
 and exec_arg_types args scopes =
-  List.fold_left
-    (fun (prev_kind, ctrl) (arg : _ Parse.prod_field) ->
-      match ctrl with
-      | None args -> begin
-          match arg with
-          | Parse.Decl
-              {
-                kind;
-                name_or_count = name_pos, Name name;
-                type' = Some (type_pos, type');
-                value = None;
-              } -> (
-              let kind =
-                Option.value (Option.map snd kind) ~default:prev_kind
-              in
-              let ctrl = exec_expr type' scopes in
-              let () =
-                match
-                  List.find_opt
-                    (fun ({ name = existing_name; _ } : prod_field_type) ->
-                      existing_name = name)
-                    args
-                with
-                | Some { name; _ } -> raise (Redeclaration (name_pos, name))
-                | None -> ()
-              in
-              match ctrl with
-              | None type_val ->
-                  let type' = expect_type type_pos type_val in
-                  (kind, return (args @ [ { kind; name; type' } ]))
-              | Brk pos -> (kind, Brk pos)
-              | Ctn pos -> (kind, Ctn pos)
-              | Ret (pos, value) -> (kind, Ret (pos, value)))
-          | _ -> raise TODO
-        end
-      | Brk pos -> (prev_kind, Brk pos)
-      | Ctn pos -> (prev_kind, Ctn pos)
-      | Ret (pos, value) -> (prev_kind, Ret (pos, value)))
-    (Parse.Val, return [])
-    args
-  |> snd
+  let* _, args =
+    fold_left_ctrl
+      (fun (prev_kind, args) (arg : _ Parse.prod_field) ->
+        match arg with
+        | Parse.Decl
+            {
+              kind;
+              name_or_count = name_pos, Name name;
+              type' = Some (type_pos, type');
+              value = None;
+            } ->
+            let kind = Option.value (Option.map snd kind) ~default:prev_kind in
+            let* type_val = exec_expr type' scopes in
+            let () =
+              match
+                List.find_opt
+                  (fun ({ name = existing_name; _ } : prod_field_type) ->
+                    existing_name = name)
+                  args
+              with
+              | Some { name; _ } -> raise (Redeclaration (name_pos, name))
+              | None -> ()
+            in
+            let type' = expect_type type_pos type_val in
+            return (kind, args @ [ { kind; name; type' } ])
+        | _ -> raise TODO)
+      (Parse.Val, []) args
+  in
+  return args
 
 and exec_block scopes = function
   | [ Expr expr ] -> exec_expr expr (ref StringMap.empty :: scopes)
