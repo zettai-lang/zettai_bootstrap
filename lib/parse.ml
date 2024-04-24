@@ -198,9 +198,16 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
            | _, Count n -> Lit (Num n)
          in
          Value (fst name_or_count, expr))
-      <|> (expr |> pos >>| fun (p, expr) -> Value (p, expr))
+      <* lookahead
+           (~>>(token ',' *> return ()) <|> (skip_horiz_space <* token ')'))
+      <|> (expr |> pos
+          >>| (fun (p, expr) -> Value (p, expr))
+          <* lookahead
+               (~>>(token ',' *> return ()) <|> (skip_horiz_space <* token ')'))
+          )
     in
-    token '(' *> golike_sep_by (token ',') prod_field <* token ')'
+
+    token '(' @> golike_sep_by (token ',') prod_field <* token ')'
 
   let decl expr =
     let* p, _ = peek |> pos in
@@ -941,6 +948,32 @@ let%expect_test _ =
                          { Starpath.row = 1; col = 10 },
                            (Parse.Id ({ Starpath.row = 1; col = 10 }, "b"))))] }
                          )) |}]
+
+let%expect_test _ =
+  dump "foo(bar(baz))";
+  [%expect
+    {|
+    (Parse.Call (
+       { Starpath.row = 1; col = 1 },
+         { Parse.callee =
+           (Parse.Id ({ Starpath.row = 1; col = 1 }, "foo"));
+              args =
+              [(Parse.Value (
+                  { Starpath.row = 1; col = 5 },
+                    (Parse.Call (
+                       { Starpath.row = 1; col = 5 },
+                         { Parse.callee =
+                           (Parse.Id ({ Starpath.row = 1; col = 5 }, "bar"));
+                              args =
+                              [(Parse.Value (
+                                  { Starpath.row = 1; col = 9 },
+                                    (Parse.Id (
+                                       { Starpath.row = 1; col = 9 }, "baz"))))]
+                                    }
+                                  ))
+                                ))
+                              ]
+                           })) |}]
 
 let%expect_test _ =
   dump "1 + 2 - 3 * 4 / 5 % 6 && 7 || 9 == 10 != 11 < 12 <= 13 . hi";

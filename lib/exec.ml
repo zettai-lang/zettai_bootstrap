@@ -202,6 +202,11 @@ let ref_array_of_string s =
   let cs = List.init (String.length s) (String.get s) in
   Ref (Array (ref (List.map (fun x -> Rune x) cs)))
 
+let string_of_char_ref_array cs =
+  Option.map
+    (List.to_seq >> String.of_seq)
+    (try_map (function Rune r -> Some r | _ -> None) cs)
+
 let rec exec_expr expr scopes =
   let exec_binop = exec_binop scopes in
   let exec_uop = exec_uop scopes in
@@ -644,10 +649,8 @@ let rec stringify value =
   | Ref (Array { contents }) ->
       if contents = [] then "[]"
       else begin
-        match try_map (function Rune r -> Some r | _ -> None) contents with
-        | Some cs ->
-            let s = String.of_seq (List.to_seq cs) in
-            "\"" ^ String.escaped s ^ "\""
+        match string_of_char_ref_array contents with
+        | Some s -> "\"" ^ String.escaped s ^ "\""
         | None -> raise TODO
       end
   | Type t -> begin
@@ -957,6 +960,27 @@ let _len =
              Num (List.length contents)
          | _ -> raise (InvalidCallArgs (call_pos, [ "array" ], fields))))
 
+let _read_file =
+  Val
+    (Proc
+       (fun call_pos fields ->
+         let invalid_call_args =
+           InvalidCallArgs (call_pos, [ "path" ], fields)
+         in
+         match fields with
+         | [
+          { name = None | Some "path"; entry = Val (Ref (Array { contents })) };
+         ] ->
+             let p =
+               get_or_else (string_of_char_ref_array contents) (fun () ->
+                   raise invalid_call_args)
+             in
+             let f = open_in_bin p in
+             let s = really_input_string f (in_channel_length f) in
+             close_in f;
+             ref_array_of_string s
+         | _ -> raise invalid_call_args))
+
 let builtins =
   StringMap.empty
   |> StringMap.add "false" (Val (bool_from_bool false))
@@ -965,6 +989,7 @@ let builtins =
   |> StringMap.add "rune" (Val (Type Rune))
   |> StringMap.add "println" println
   |> StringMap.add "_get" _get |> StringMap.add "_len" _len
+  |> StringMap.add "_read_file" _read_file
 
 let _args args = Val (Ref (Array (ref (List.map ref_array_of_string args))))
 
