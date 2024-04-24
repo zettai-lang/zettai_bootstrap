@@ -268,20 +268,26 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
           <|> (proc expr >>| fun proc -> Proc proc)
           <|> (proc_t expr >>| fun (p, proc_t) -> ProcT (p, proc_t))
         in
-        let dot_expr =
-          let* p, accessee = prim_expr |> pos in
-          let+ accessors = repeat (~>>(token '.') *>> (id |> pos)) in
+        let call_dot_expr =
+          let* p, operand = prim_expr |> pos in
+          let+ accessors =
+            repeat
+              ~>>(token '.' *>> (id |> pos >>| Either.left)
+                 <|> (prod expr >>| Either.right))
+          in
           List.fold_left
-            (fun accessee (accessor_pos, accessor) ->
-              Binop (p, accessee, Dot, accessor_pos, Id (accessor_pos, accessor)))
-            accessee accessors
-        in
-        let call_expr =
-          let* p, callee = dot_expr |> pos in
-          let+ argss = repeat ~>>(prod expr) in
-          List.fold_left
-            (fun callee args -> Call (p, { callee; args }))
-            callee argss
+            (fun (p, accessee) -> function
+              | Either.Left (accessor_pos, accessor) ->
+                  ( p,
+                    Binop
+                      ( p,
+                        accessee,
+                        Dot,
+                        accessor_pos,
+                        Id (accessor_pos, accessor) ) )
+              | Right args -> (p, Call (p, { callee = accessee; args })))
+            (p, operand) accessors
+          |> snd
         in
         let uop_expr =
           let* uops =
@@ -292,7 +298,7 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
               <|> token '*' @> return Deref
               |> pos <* skip_space)
           in
-          let+ expr = call_expr in
+          let+ expr = call_dot_expr in
           List.fold_right (fun (p, uop) expr -> Uop (p, uop, expr)) uops expr
         in
         let* p, lhs1 = uop_expr |> pos in
@@ -1114,3 +1120,22 @@ let%expect_test _ =
                 (Parse.Uop (
                    { Starpath.row = 1; col = 6 }, Parse.UnaryMins,
                      (Parse.Lit (Parse.Num 3)))))) |}]
+
+let%expect_test _ =
+  dump "foo(bar).baz";
+  [%expect
+    {|
+    (Parse.Binop (
+       { Starpath.row = 1; col = 1 },
+         (Parse.Call (
+            { Starpath.row = 1; col = 1 },
+              { Parse.callee =
+                (Parse.Id ({ Starpath.row = 1; col = 1 }, "foo"));
+                   args =
+                   [(Parse.Value (
+                       { Starpath.row = 1; col = 5 },
+                         (Parse.Id ({ Starpath.row = 1; col = 5 }, "bar"))))] }
+                       )),
+                     Parse.Dot,
+                     { Starpath.row = 1; col = 10 },
+                       (Parse.Id ({ Starpath.row = 1; col = 10 }, "baz"))))|}]
