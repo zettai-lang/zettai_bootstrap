@@ -263,6 +263,7 @@ let rec exec_expr expr scopes =
           exec_uop operand (function
             | Num n -> return (Num (-n))
             | invalid -> raise (InvalidUnaryOperand (pos, invalid)))
+      | MutRef -> raise TODO
       (* TODO: Handle array refs. *)
       | Ref -> exec_uop operand @@ fun x -> return (Ref (Singleton (ref x)))
       | Deref ->

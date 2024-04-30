@@ -10,7 +10,7 @@ type lit = Num of int | Rune of char | String of string
 [@@deriving show, variants]
 
 type name_or_count = Name of string | Count of int [@@deriving show, variants]
-type uop = Not | UnaryMins | Ref | Deref [@@deriving show]
+type uop = Not | UnaryMins | Ref | MutRef | Deref [@@deriving show]
 
 type binop =
   | Plus
@@ -294,6 +294,7 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
             repeat
               (token '!' @> return Not
               <|> token '-' @> return UnaryMins
+              <|> token '&' @> keyword "mut" @> return MutRef
               <|> token '&' @> return Ref
               <|> token '*' @> return Deref
               |> pos <* skip_space)
@@ -427,6 +428,14 @@ let%expect_test _ =
     (Parse.Uop (
        { Starpath.row = 1; col = 1 }, Parse.Ref,
          (Parse.Id ({ Starpath.row = 1; col = 2 }, "foo")))) |}]
+
+let%expect_test _ =
+  dump "&mut foo";
+  [%expect
+    {|
+    (Parse.Uop (
+       { Starpath.row = 1; col = 1 }, Parse.MutRef,
+         (Parse.Id ({ Starpath.row = 1; col = 6 }, "foo")))) |}]
 
 let%expect_test _ =
   dump "*foo";

@@ -1,7 +1,7 @@
 type kind = Mut | Val
 type lit = Num of int | Rune of char | String of string
 type name_or_count = Name of string | Count of int
-type uop = Not | UnaryMins | Ref | Deref
+type uop = Not | UnaryMins | Ref | MutRef | Deref
 
 type binop =
   | Plus
