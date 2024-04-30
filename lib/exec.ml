@@ -23,7 +23,8 @@ and scope_entry = Mut of value option ref | Val of value
 and prod_field = { name : string option; entry : scope_entry }
 and prod = prod_field list
 and sum_variant = { type' : sum_type; disc : int; field : value option }
-and ref' = Singleton of value ref | Array of value list ref
+and ref_value = Singleton of value ref | Array of value list ref
+and ref' = { kind : Parse.kind; value : ref_value }
 
 and type' =
   | Num
@@ -225,12 +226,32 @@ exception Unreachable
 
 let ref_array_of_string s =
   let cs = List.init (String.length s) (String.get s) in
-  Ref (Array (ref (List.map (fun x -> Rune x) cs)))
+  Ref { kind = Parse.Val; value = Array (ref (List.map (fun x -> Rune x) cs)) }
 
 let string_of_char_ref_array cs =
   Option.map
     (List.to_seq >> String.of_seq)
     (try_map (function Rune r -> Some r | _ -> None) cs)
+
+let rec copy = function
+  | (Num _ | Rune _ | Proc _ | Ref _ | Type _) as x -> x
+  | SumVariant ({ field; _ } as variant) ->
+      SumVariant { variant with field = Option.map copy field }
+  | Prod prod -> Prod (copy_prod prod)
+
+and copy_prod prod =
+  let copy_entry = function
+    | Mut value -> Mut (ref (Option.map copy !value))
+    | Val value -> Val (copy value)
+  in
+  let copy_field { name; entry } = { name; entry = copy_entry entry } in
+  List.map copy_field prod
+
+let rec deref = function Ref { value = Singleton x; _ } -> deref !x | x -> x
+
+let rec deref_mut = function
+  | Ref { kind = Parse.Mut; value = Singleton x } -> deref_mut !x
+  | x -> x
 
 exception NeitherValueNorTypeProd of pos
 
@@ -263,13 +284,17 @@ let rec exec_expr expr scopes =
           exec_uop operand (function
             | Num n -> return (Num (-n))
             | invalid -> raise (InvalidUnaryOperand (pos, invalid)))
-      | MutRef -> raise TODO
       (* TODO: Handle array refs. *)
-      | Ref -> exec_uop operand @@ fun x -> return (Ref (Singleton (ref x)))
+      | MutRef ->
+          exec_uop operand @@ fun x ->
+          return (Ref { kind = Parse.Mut; value = Singleton (ref x) })
+      | Ref ->
+          exec_uop operand @@ fun x ->
+          return (Ref { kind = Parse.Val; value = Singleton (ref x) })
       | Deref ->
           exec_uop operand (function
-            | Ref (Singleton { contents }) -> return contents
-            | Ref (Array _) -> raise TODO
+            | Ref { value = Singleton { contents }; _ } -> return contents
+            | Ref { value = Array _; _ } -> raise TODO
             | invalid -> raise (InvalidUnaryOperand (pos, invalid)))
     end
   | Binop (pos, lhs, binop, rhs_pos, rhs) -> begin
@@ -315,7 +340,7 @@ let rec exec_expr expr scopes =
             | _ -> raise (InvalidAccessor rhs_pos)
           in
           let+ ctrl = exec_expr lhs scopes in
-          match ctrl with
+          match deref ctrl with
           | Prod fields -> begin
               match
                 List.find_opt (fun { name; _ } -> name = Some accessor) fields
@@ -408,7 +433,7 @@ let rec exec_expr expr scopes =
       | Proc f -> begin
           let+ res = exec_prod pos args scopes in
           match res with
-          | Either.Left args -> f pos args
+          | Either.Left args -> f pos (copy_prod args)
           | Right _ -> raise TODO
         end
       | invalid -> raise (InvalidCallee (pos, invalid))
@@ -616,7 +641,7 @@ and exec_stmt stmt scopes =
         match assignee' with
         | Mut value_ref ->
             let+ value = exec_expr value scopes in
-            value_ref := Some value;
+            value_ref := Some (copy value);
             ()
         | _ -> raise (ImmutableAssign (pos, name))
       in
@@ -630,7 +655,7 @@ and exec_stmt stmt scopes =
         end
       | Binop (pos, accessee, Dot, _, Id (accessor_pos, accessor)) -> begin
           let* accessee = exec_expr accessee scopes in
-          match accessee with
+          match deref_mut accessee with
           | Prod fields -> begin
               match
                 List.find_opt (fun { name; _ } -> name = Some accessor) fields
@@ -694,8 +719,11 @@ let rec stringify value =
       let fields_string = String.concat "\n  " field_strings in
       "(\n  " ^ fields_string ^ "\n)"
   | Proc _ -> "proc(...) { ... }"
-  | Ref (Singleton { contents }) -> "&" ^ stringify contents
-  | Ref (Array { contents }) ->
+  | Ref { kind; value = Singleton { contents } } ->
+      "&"
+      ^ (match kind with Parse.Val -> "" | Parse.Mut -> "mut ")
+      ^ stringify contents
+  | Ref { value = Array { contents }; _ } ->
       if contents = [] then "[]"
       else begin
         match string_of_char_ref_array contents with
@@ -855,15 +883,21 @@ let%expect_test _ =
   [%expect "proc(...) { ... }"]
 
 let%expect_test _ =
-  stringify (Ref (Singleton (ref (Num 10)))) |> print_endline;
+  stringify (Ref { kind = Parse.Val; value = Singleton (ref (Num 10)) })
+  |> print_endline;
   [%expect "&10"]
 
 let%expect_test _ =
-  stringify (Ref (Array (ref []))) |> print_endline;
+  stringify (Ref { kind = Parse.Val; value = Array (ref []) }) |> print_endline;
   [%expect "[]"]
 
 let%expect_test _ =
-  stringify (Ref (Array (ref [ Rune 'a'; Rune 'b'; Rune 'c' ])))
+  stringify
+    (Ref
+       {
+         kind = Parse.Val;
+         value = Array (ref [ Rune 'a'; Rune 'b'; Rune 'c' ]);
+       })
   |> print_endline;
   [%expect {|"abc"|}]
 
@@ -971,7 +1005,10 @@ let import exec_ast args =
          in
          match fields with
          | [
-          { name = None | Some "path"; entry = Val (Ref (Array { contents })) };
+          {
+            name = None | Some "path";
+            entry = Val (Ref { kind = Parse.Val; value = Array { contents } });
+          };
          ] ->
              let relative_path =
                get_or_else (string_of_char_ref_array contents) (fun () ->
@@ -1008,13 +1045,18 @@ let _get =
        (fun call_pos fields ->
          match fields with
          | [
-             { name = None; entry = Val (Ref (Array { contents })) };
+             {
+               name = None;
+               entry =
+                 Val (Ref { kind = Parse.Val; value = Array { contents } });
+             };
              { name = None; entry = Val (Num index) };
            ]
          | [
              {
                name = None | Some "array";
-               entry = Val (Ref (Array { contents }));
+               entry =
+                 Val (Ref { kind = Parse.Val; value = Array { contents } });
              };
              { name = Some "index"; entry = Val (Num index) };
            ] -> begin
@@ -1031,7 +1073,10 @@ let _len =
        (fun call_pos fields ->
          match fields with
          | [
-          { name = None | Some "array"; entry = Val (Ref (Array { contents })) };
+          {
+            name = None | Some "array";
+            entry = Val (Ref { kind = Parse.Val; value = Array { contents } });
+          };
          ] ->
              Num (List.length contents)
          | _ -> raise (InvalidCallArgs (call_pos, [ "array" ], fields))))
@@ -1045,7 +1090,10 @@ let _read_file =
          in
          match fields with
          | [
-          { name = None | Some "path"; entry = Val (Ref (Array { contents })) };
+          {
+            name = None | Some "path";
+            entry = Val (Ref { kind = Parse.Val; value = Array { contents } });
+          };
          ] ->
              let p =
                get_or_else (string_of_char_ref_array contents) (fun () ->
@@ -1057,7 +1105,13 @@ let _read_file =
              ref_array_of_string s
          | _ -> raise invalid_call_args))
 
-let _args args = Val (Ref (Array (ref (List.map ref_array_of_string args))))
+let _args args =
+  Val
+    (Ref
+       {
+         kind = Parse.Val;
+         value = Array (ref (List.map ref_array_of_string args));
+       })
 
 let rec exec_ast ast args =
   let builtins =
@@ -1105,11 +1159,19 @@ let%test _ = Num 14 = exec_string "5 + 9"
 let%test _ = Rune 'c' = exec_string "'c'"
 
 let%test _ =
-  Ref (Array (ref [ Rune 'f'; Rune 'o'; Rune 'o' ])) = exec_string {|"foo"|}
+  Ref { kind = Parse.Val; value = Array (ref [ Rune 'f'; Rune 'o'; Rune 'o' ]) }
+  = exec_string {|"foo"|}
 
 let%test _ = Rune 'o' = exec_string {|_get("foo", 1)|}
 let%test _ = Num 3 = exec_string {|_len("foo")|}
-let%test _ = Ref (Singleton (ref (Num 50))) = exec_string "&50"
+
+let%test _ =
+  Ref { kind = Parse.Val; value = Singleton (ref (Num 50)) } = exec_string "&50"
+
+let%test _ =
+  Ref { kind = Parse.Mut; value = Singleton (ref (Num 50)) }
+  = exec_string "&mut 50"
+
 let%test _ = Num 50 = exec_string "*&50"
 
 let%test_unit _ =
@@ -1665,3 +1727,29 @@ let%test_unit _ =
   assert_raises (ProcTypeWithoutReturn (StringPos { row = 1; col = 1 })) f
 
 let%test _ = Num (5 + 3) = exec_string "(foo = 5, bar = foo + 3).bar"
+
+let%test _ =
+  Num 0
+  = exec_string
+      {|
+    proc() {
+      val t = (mut field : num)
+      val o = (mut field = 0)
+      val f = proc(x : t) { x.field = 1 }
+      f(o)
+      ret o.field
+    }()
+  |}
+
+let%test _ =
+  Num 1
+  = exec_string
+      {|
+    proc() {
+      val t = (mut field : num)
+      val o = (mut field = 0)
+      val f = proc(x : &mut t) { x.field = 1 }
+      f(&mut o)
+      ret o.field
+    }()
+  |}
