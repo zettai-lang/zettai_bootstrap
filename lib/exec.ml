@@ -19,8 +19,8 @@ type value =
   | Ref of ref'
   | Type of type'
 
-and scope_entry = Mut of value option ref | Val of value
-and prod_field = { name : string option; entry : scope_entry }
+and prod_entry = Mut of value option ref | Val of value
+and prod_field = { name : string option; entry : prod_entry }
 and prod = prod_field list
 and sum_variant = { type' : sum_type; disc : int; field : value option }
 and ref_value = Singleton of value ref | Array of value list ref
@@ -38,26 +38,6 @@ and sum_type = sum_variant_type list
 and sum_variant_type = { name : string; disc : int; field_type : type' option }
 and prod_field_type = { kind : Parse.kind; name : string; type' : type' }
 and proc_type = { arg_types : prod_field_type list; return_type : type' }
-
-let scope_entry value = function
-  | Parse.Mut -> Mut (ref (Some value))
-  | Val -> Val value
-
-exception UseBeforeInitialization of pos * string
-
-let () =
-  Printexc.register_printer @@ function
-  | UseBeforeInitialization (pos, name) ->
-      Some
-        (Printf.sprintf "%s: use of \"%s\" before initialization"
-           (string_of_pos pos) name)
-  | _ -> None
-
-let value_of_scope_entry pos name = function
-  | Mut value_ref ->
-      get_or_else !value_ref (fun () ->
-          raise (UseBeforeInitialization (pos, name)))
-  | Val value -> value
 
 exception ValueAsType of pos * value
 
@@ -98,6 +78,13 @@ let rec fold_left_ctrl f init = function
       let* y = f init x in
       fold_left_ctrl f y xs
 
+let rec map_ctrl f = function
+  | [] -> return []
+  | x :: xs ->
+      let* y = f x in
+      let+ ys = map_ctrl f xs in
+      y :: ys
+
 let rec try_fold_left_ctrl f init : _ -> _ option = function
   | [] -> Some (return init)
   | x :: xs -> begin
@@ -114,6 +101,47 @@ let rec map_ctrl f = function
       let* y = f x in
       let+ ys = map_ctrl f xs in
       y :: ys
+
+type scope_entry =
+  | Mut of value option ref
+  | Val of value
+  | Dyn of value ctrl Lazy.t
+
+let scope_entry value = function
+  | Parse.Mut -> Mut (ref (Some value))
+  | Val -> Val value
+
+let prod_entry value : _ -> prod_entry = function
+  | Parse.Mut -> Mut (ref (Some value))
+  | Val -> Val value
+
+let scope_entry_of_prod_entry : prod_entry -> _ = function
+  | Mut value_ref -> Mut value_ref
+  | Val value -> Val value
+
+exception UseBeforeInitialization of pos * string
+
+let () =
+  Printexc.register_printer @@ function
+  | UseBeforeInitialization (pos, name) ->
+      Some
+        (Printf.sprintf "%s: use of \"%s\" before initialization"
+           (string_of_pos pos) name)
+  | _ -> None
+
+let value_of_prod_entry pos name : prod_entry -> _ = function
+  | Mut value_ref ->
+      get_or_else !value_ref (fun () ->
+          raise (UseBeforeInitialization (pos, name)))
+  | Val value -> value
+
+let value_of_scope_entry pos name = function
+  | Mut value_ref ->
+      return
+        (get_or_else !value_ref (fun () ->
+             raise (UseBeforeInitialization (pos, name))))
+  | Val value -> return value
+  | Dyn value_fun -> Lazy.force value_fun
 
 exception NumAsArgumentName of pos
 
@@ -240,7 +268,7 @@ let rec copy = function
   | Prod prod -> Prod (copy_prod prod)
 
 and copy_prod prod =
-  let copy_entry = function
+  let copy_entry : prod_entry -> prod_entry = function
     | Mut value -> Mut (ref (Option.map copy !value))
     | Val value -> Val (copy value)
   in
@@ -272,7 +300,7 @@ let rec exec_expr expr scopes =
       let entry =
         get_or_else entry_opt @@ fun () -> raise (UnboundIdent (pos, i))
       in
-      return (value_of_scope_entry pos i entry)
+      value_of_scope_entry pos i entry
   | Uop (pos, uop, operand) -> begin
       match uop with
       | Not ->
@@ -346,7 +374,7 @@ let rec exec_expr expr scopes =
                 List.find_opt (fun { name; _ } -> name = Some accessor) fields
               with
               | Some { entry; _ } ->
-                  value_of_scope_entry accessor_pos accessor entry
+                  value_of_prod_entry accessor_pos accessor entry
               | None -> raise (InvalidField (accessor_pos, accessor))
             end
           | Type (Sum type') -> (
@@ -392,8 +420,8 @@ let rec exec_expr expr scopes =
       | Right prod_type -> Type prod_type
     end
   | Block stmts -> exec_block scopes stmts
-  | Proc { type' = { args = _, args; _ }; body } ->
-      let expected = args_names args in
+  | Proc { type' = { args = _, { fields; _ }; _ }; body } ->
+      let expected = args_names fields in
       return
         (Proc
            (fun call_pos fields ->
@@ -414,7 +442,8 @@ let rec exec_expr expr scopes =
                    StringMap.add expected_name entry scope)
                  StringMap.empty field_pairs
              in
-             let ctrl = exec_block (ref fields_scope :: scopes) body in
+             let scope = StringMap.map scope_entry_of_prod_entry fields_scope in
+             let ctrl = exec_block (ref scope :: scopes) body in
              match ctrl with
              | None value -> value
              | Brk pos | Ctn pos -> raise (UnexpectedCtrl pos)
@@ -472,10 +501,10 @@ and exec_sum variants scopes =
     variants
   >>= fun variants -> return (Type (Sum variants))
 
-and exec_prod pos fields scopes : (prod, type') Either.t ctrl =
+and exec_prod pos { rec'; fields } scopes : (prod, type') Either.t ctrl =
   let fields' =
-    Option.map (( <$> ) (fun (_, fields, _) -> Either.Left fields))
-    @@ try_fold_left_ctrl
+    Option.map (fun (_, fields, _) -> fields)
+    @@ try_fold_left
          (fun (prev_kind, fields, scope) (field : _ Parse.prod_field) ->
            match field with
            | Parse.Decl
@@ -489,31 +518,83 @@ and exec_prod pos fields scopes : (prod, type') Either.t ctrl =
                  (let kind =
                     Option.value (Option.map snd kind) ~default:prev_kind
                   in
-                  let+ value = exec_expr value (ref scope :: scopes) in
                   let () =
                     match
                       List.find_opt (( = ) name)
-                        (List.filter_map (fun { name; _ } -> name) fields)
+                        (List.filter_map
+                           (function
+                             | Either.Left (_, name, _) -> Some name
+                             | Either.Right _ -> None)
+                           fields)
                     with
                     | Some name -> raise (Redeclaration (name_pos, name))
                     | None -> ()
                   in
-                  let entry = scope_entry value kind in
-                  let scope = StringMap.add name entry scope in
-                  let name = Some name in
-                  (kind, fields @ [ { name; entry } ], scope))
+                  (kind, fields @ [ Either.Left (kind, name, value) ], scope))
            | Decl { value = None; _ } -> None
            | Value (_, value) ->
                Some
-                 (let+ value = exec_expr value (ref scope :: scopes) in
-                  let name = Option.None in
-                  let entry = scope_entry value prev_kind in
-                  (prev_kind, fields @ [ { name; entry } ], scope))
+                 (prev_kind, fields @ [ Either.Right (prev_kind, value) ], scope)
            | _ -> raise TODO)
          (Parse.Val, [], StringMap.empty)
          fields
   in
-  get_or_else fields' @@ fun () ->
+  let prod_of_fields fields =
+    let* fields =
+      map_ctrl
+        (function
+          | Either.Left (kind, name, value) ->
+              let* value = exec_expr value scopes in
+              let name = Some name in
+              let entry = prod_entry value kind in
+              return { name; entry }
+          | Either.Right (kind, value) ->
+              let* value = exec_expr value scopes in
+              let entry = prod_entry value kind in
+              return { name = None; entry })
+        fields
+    in
+    return (Either.Left fields)
+  in
+  let prod_of_fields_rec fields =
+    let scope = ref StringMap.empty in
+    let lazies =
+      List.map
+        (function
+          | Either.Left (kind, name, value) ->
+              Either.Left (kind, name, lazy (exec_expr value (scope :: scopes)))
+          | Either.Right (kind, value) ->
+              Either.Right (kind, lazy (exec_expr value (scope :: scopes))))
+        fields
+    in
+    let () =
+      List.iter
+        (function
+          | Either.Left (_, name, value) ->
+              scope := StringMap.add name (Dyn value) !scope;
+              ()
+          | Either.Right _ -> ())
+        lazies
+    in
+    let* fields =
+      map_ctrl
+        (function
+          | Either.Left (kind, name, (lazy value)) ->
+              let* value = value in
+              let name = Some name in
+              let entry = prod_entry value kind in
+              return { name; entry }
+          | Either.Right (kind, (lazy value)) ->
+              let* value = value in
+              let entry = prod_entry value kind in
+              return { name = None; entry })
+        lazies
+    in
+    return (Either.Left fields)
+  in
+  get_or_else
+    (Option.map (if rec' then prod_of_fields_rec else prod_of_fields) fields')
+  @@ fun () ->
   let prod_type =
     Option.map
       (( <$> ) (fun x : (_, type') Either.t ->
@@ -553,7 +634,7 @@ and exec_prod pos fields scopes : (prod, type') Either.t ctrl =
   in
   get_or_else prod_type @@ fun () -> raise (NeitherValueNorTypeProd pos)
 
-and exec_arg_types args scopes =
+and exec_arg_types { fields; _ } scopes =
   let+ _, args =
     fold_left_ctrl
       (fun (prev_kind, args) (arg : _ Parse.prod_field) ->
@@ -580,7 +661,7 @@ and exec_arg_types args scopes =
             let type' = expect_type type_pos type_val in
             (kind, args @ [ { kind; name; type' } ])
         | _ -> raise TODO)
-      (Parse.Val, []) args
+      (Parse.Val, []) fields
   in
   args
 
@@ -637,20 +718,16 @@ and exec_stmt stmt scopes =
       | Val, None -> raise (UninitializedVal (decl_pos, name))
     end
   | Assign { assignee; value } -> begin
-      let try_scope_entry_assign pos name assignee' scopes =
-        match assignee' with
-        | Mut value_ref ->
-            let+ value = exec_expr value scopes in
-            value_ref := Some (copy value);
-            ()
-        | _ -> raise (ImmutableAssign (pos, name))
-      in
       match assignee with
       | Id (pos, i) -> begin
           match
             List.find_map (fun scope -> StringMap.find_opt i !scope) scopes
           with
-          | Some assignee -> try_scope_entry_assign pos i assignee scopes
+          | Some (Mut value_ref) ->
+              let+ value = exec_expr value scopes in
+              value_ref := Some (copy value);
+              ()
+          | Some _ -> raise (ImmutableAssign (pos, i))
           | None -> raise (UnboundIdent (pos, i))
         end
       | Binop (pos, accessee, Dot, _, Id (accessor_pos, accessor)) -> begin
@@ -660,8 +737,11 @@ and exec_stmt stmt scopes =
               match
                 List.find_opt (fun { name; _ } -> name = Some accessor) fields
               with
-              | Some { entry; _ } ->
-                  try_scope_entry_assign pos accessor entry scopes
+              | Some { entry = Mut value_ref; _ } ->
+                  let+ value = exec_expr value scopes in
+                  value_ref := Some (copy value);
+                  ()
+              | Some _ -> raise (ImmutableAssign (pos, accessor))
               | None -> raise (InvalidField (accessor_pos, accessor))
             end
           | invalid -> raise (InvalidAccessee (pos, invalid))
@@ -1726,7 +1806,37 @@ let%test_unit _ =
   let f () = exec_string "proc(i: num)" in
   assert_raises (ProcTypeWithoutReturn (StringPos { row = 1; col = 1 })) f
 
-let%test _ = Num (5 + 3) = exec_string "(foo = 5, bar = foo + 3).bar"
+let%test _ = Num (5 + 3) = exec_string "rec (foo = 5, bar = foo + 3).bar"
+let%test _ = Num (5 + 3) = exec_string "rec (foo = bar + 3, bar = 5).foo"
+
+let%test _ =
+  Num 1
+  = exec_string "proc() { (foo = 2, bar = { ret 1 }, baz = { ret 0 }).foo }()"
+
+let%test _ =
+  Num 0
+  = exec_string
+      "proc() { rec (foo = baz, bar = { ret 1 }, baz = { ret 0 }).foo }()"
+
+let%test _ =
+  Num 1
+  = exec_string
+      {|
+    proc() {
+      val a = 1
+      ret (a = 0, b = a).b
+    }()
+  |}
+
+let%test _ =
+  Num 0
+  = exec_string
+      {|
+    proc() {
+      val a = 1
+      ret rec (a = 0, b = a).b
+    }()
+  |}
 
 let%test _ =
   Num 0

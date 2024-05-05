@@ -24,7 +24,7 @@ type 'p expr =
   | Binop of 'p * 'p expr * binop * 'p * 'p expr
   | If of 'p if'
   | Sum of 'p sum_var list
-  | Prod of 'p * 'p prod_field list
+  | Prod of 'p * 'p prod
   | Block of 'p stmt list
   | Proc of 'p proc
   | ProcT of 'p * 'p proc_t
@@ -37,6 +37,7 @@ and 'p if' = {
 }
 
 and 'p sum_var = { name : string; value : ('p * 'p expr) option }
+and 'p prod = { rec' : bool; fields : 'p prod_field list }
 and 'p prod_field = Decl of 'p decl_field | Value of 'p * 'p expr
 
 and 'p decl_field = {
@@ -64,13 +65,8 @@ and 'p decl = {
 
 and 'p assign = { assignee : 'p expr; value : 'p expr }
 and 'p proc = { type' : 'p proc_t; body : 'p stmt list }
-
-and 'p proc_t = {
-  args : 'p * 'p prod_field list;
-  return_type : ('p * 'p expr) option;
-}
-
-and 'p call = { callee : 'p expr; args : 'p prod_field list }
+and 'p proc_t = { args : 'p * 'p prod; return_type : ('p * 'p expr) option }
+and 'p call = { callee : 'p expr; args : 'p prod }
 
 type 'p ast = 'p expr
 

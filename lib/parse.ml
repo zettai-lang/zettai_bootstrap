@@ -34,7 +34,7 @@ type 'p expr =
   | Binop of 'p * 'p expr * binop * 'p * 'p expr
   | If of 'p if'
   | Sum of 'p sum_var list
-  | Prod of 'p * 'p prod_field list
+  | Prod of 'p * 'p prod
   | Block of 'p stmt list
   | Proc of 'p proc
   | ProcT of 'p * 'p proc_t
@@ -48,6 +48,7 @@ and 'p if' = {
 }
 
 and 'p sum_var = { name : string; value : ('p * 'p expr) option }
+and 'p prod = { rec' : bool; fields : 'p prod_field list }
 and 'p prod_field = Decl of 'p decl_field | Value of 'p * 'p expr
 
 and 'p decl_field = {
@@ -75,13 +76,8 @@ and 'p decl = {
 
 and 'p assign = { assignee : 'p expr; value : 'p expr }
 and 'p proc = { type' : 'p proc_t; body : 'p stmt list }
-
-and 'p proc_t = {
-  args : 'p * 'p prod_field list;
-  return_type : ('p * 'p expr) option;
-}
-
-and 'p call = { callee : 'p expr; args : 'p prod_field list }
+and 'p proc_t = { args : 'p * 'p prod; return_type : ('p * 'p expr) option }
+and 'p call = { callee : 'p expr; args : 'p prod }
 
 type 'p ast = 'p expr [@@deriving map, show]
 
@@ -109,7 +105,19 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
   let is_id_cont c = is_id_start c || is_digit c
 
   let reserved =
-    [ "if"; "then"; "else"; "mut"; "val"; "loop"; "proc"; "brk"; "ctn"; "ret" ]
+    [
+      "if";
+      "then";
+      "else";
+      "mut";
+      "val";
+      "loop";
+      "proc";
+      "brk";
+      "ctn";
+      "ret";
+      "rec";
+    ]
 
   let id =
     let* pos, start = satisfy ~expected:[ "<IDENTIFIER>" ] is_id_start |> pos in
@@ -206,8 +214,11 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
                (~>>(token ',' *> return ()) <|> (skip_horiz_space <* token ')'))
           )
     in
-
-    token '(' @> golike_sep_by (token ',') prod_field <* token ')'
+    let* rec' = optional (keyword "rec" <* skip_space) >>| Option.is_some in
+    let+ fields =
+      token '(' @> golike_sep_by (token ',') prod_field <* token ')'
+    in
+    { rec'; fields }
 
   let decl expr =
     let* p, _ = peek |> pos in
@@ -263,7 +274,7 @@ module Parser (Combinators : Starpath.CharCombinators) = struct
           <|> ( if' expr >>| fun (cond, if_branch, else_branch) ->
                 If { cond; if_branch; else_branch } )
           <|> (sum expr >>| fun vars -> Sum vars)
-          <|> (prod expr |> pos >>| fun (p, fields) -> Prod (p, fields))
+          <|> (prod expr |> pos >>| fun (p, prod) -> Prod (p, prod))
           <|> (block expr >>| fun stmts -> Block stmts)
           <|> (proc expr >>| fun proc -> Proc proc)
           <|> (proc_t expr >>| fun (p, proc_t) -> ProcT (p, proc_t))
@@ -535,11 +546,17 @@ let%test _ = assert_raises (fun () -> parse {|
 
 let%expect_test _ =
   dump "()";
-  [%expect {| (Parse.Prod ({ Starpath.row = 1; col = 1 }, [])) |}]
+  [%expect
+    {|
+    (Parse.Prod (
+       { Starpath.row = 1; col = 1 }, { Parse.rec' = false; fields = [] })) |}]
 
 let%expect_test _ =
   dump "(   )";
-  [%expect {| (Parse.Prod ({ Starpath.row = 1; col = 1 }, [])) |}]
+  [%expect
+    {|
+    (Parse.Prod (
+       { Starpath.row = 1; col = 1 }, { Parse.rec' = false; fields = [] })) |}]
 
 let%expect_test _ =
   dump "(5, false, \"foo\"\t)";
@@ -547,15 +564,18 @@ let%expect_test _ =
     {|
     (Parse.Prod (
        { Starpath.row = 1; col = 1 },
-         [(Parse.Value (
-             { Starpath.row = 1; col = 2 }, (Parse.Lit (Parse.Num 5))));
-               (Parse.Value (
-                  { Starpath.row = 1; col = 5 },
-                    (Parse.Id ({ Starpath.row = 1; col = 5 }, "false"))));
-                       (Parse.Value (
-                          { Starpath.row = 1; col = 12 },
-                            (Parse.Lit (Parse.String "foo"))))]
-                          )) |}]
+         { Parse.rec' = false;
+           fields =
+           [(Parse.Value (
+               { Starpath.row = 1; col = 2 }, (Parse.Lit (Parse.Num 5))));
+                 (Parse.Value (
+                    { Starpath.row = 1; col = 5 },
+                      (Parse.Id ({ Starpath.row = 1; col = 5 }, "false"))));
+                         (Parse.Value (
+                            { Starpath.row = 1; col = 12 },
+                              (Parse.Lit (Parse.String "foo"))))]
+                         }
+                      )) |}]
 
 let%expect_test _ =
   dump "(5: int)";
@@ -563,16 +583,19 @@ let%expect_test _ =
     {|
     (Parse.Prod (
        { Starpath.row = 1; col = 1 },
-         [(Parse.Decl
-             { Parse.kind = None;
-               name_or_count =
-               ({ Starpath.row = 1; col = 2 }, (Parse.Count 5));
-                type' =
-                (Some ({ Starpath.row = 1; col = 5 },
-                         (Parse.Id ({ Starpath.row = 1; col = 5 }, "int"))));
-                         value = None })
-                       ]
-                )) |}]
+         { Parse.rec' = false;
+           fields =
+           [(Parse.Decl
+               { Parse.kind = None;
+                 name_or_count =
+                 ({ Starpath.row = 1; col = 2 }, (Parse.Count 5));
+                  type' =
+                  (Some ({ Starpath.row = 1; col = 5 },
+                           (Parse.Id ({ Starpath.row = 1; col = 5 }, "int"))));
+                           value = None })
+                         ]
+                  }
+                 )) |}]
 
 let%expect_test _ =
   dump {|(a = 5, b = false, c = "foo")|};
@@ -580,27 +603,30 @@ let%expect_test _ =
     {|
     (Parse.Prod (
        { Starpath.row = 1; col = 1 },
-         [(Parse.Decl
-             { Parse.kind = None;
-               name_or_count =
-               ({ Starpath.row = 1; col = 2 }, (Parse.Name "a")); type' = None;
-                value = (Some (Parse.Lit (Parse.Num 5))) });
-               (Parse.Decl
-                  { Parse.kind = None;
-                    name_or_count =
-                    ({ Starpath.row = 1; col = 9 }, (Parse.Name "b"));
-                     type' = None;
-                     value =
-                     (Some (Parse.Id ({ Starpath.row = 1; col = 13 }, "false")))
-                              });
-                     (Parse.Decl
-                        { Parse.kind = None;
-                          name_or_count =
-                          ({ Starpath.row = 1; col = 20 }, (Parse.Name "c"));
-                           type' = None;
-                           value = (Some (Parse.Lit (Parse.String "foo"))) })
-                          ]
-                        )) |}]
+         { Parse.rec' = false;
+           fields =
+           [(Parse.Decl
+               { Parse.kind = None;
+                 name_or_count =
+                 ({ Starpath.row = 1; col = 2 }, (Parse.Name "a")); type' = None;
+                  value = (Some (Parse.Lit (Parse.Num 5))) });
+                 (Parse.Decl
+                    { Parse.kind = None;
+                      name_or_count =
+                      ({ Starpath.row = 1; col = 9 }, (Parse.Name "b"));
+                       type' = None;
+                       value =
+                       (Some (Parse.Id (
+                                { Starpath.row = 1; col = 13 }, "false"))) });
+                       (Parse.Decl
+                          { Parse.kind = None;
+                            name_or_count =
+                            ({ Starpath.row = 1; col = 20 }, (Parse.Name "c"));
+                             type' = None;
+                             value = (Some (Parse.Lit (Parse.String "foo"))) })
+                            ]
+                       }
+                      )) |}]
 
 let%expect_test _ =
   dump {|(a: int, b: bool, c: string)|};
@@ -608,36 +634,41 @@ let%expect_test _ =
     {|
     (Parse.Prod (
        { Starpath.row = 1; col = 1 },
-         [(Parse.Decl
-             { Parse.kind = None;
-               name_or_count =
-               ({ Starpath.row = 1; col = 2 }, (Parse.Name "a"));
-                type' =
-                (Some ({ Starpath.row = 1; col = 5 },
-                         (Parse.Id ({ Starpath.row = 1; col = 5 }, "int"))));
-                         value = None });
-                       (Parse.Decl
-                          { Parse.kind = None;
-                            name_or_count =
-                            ({ Starpath.row = 1; col = 10 }, (Parse.Name "b"));
-                             type' =
-                             (Some ({ Starpath.row = 1; col = 13 },
-                                      (Parse.Id (
-                                         { Starpath.row = 1; col = 13 }, "bool"))));
-                                      value = None });
-                                    (Parse.Decl
-                                       { Parse.kind = None;
-                                         name_or_count =
-                                         ({ Starpath.row = 1; col = 19 },
-                                            (Parse.Name "c"));
-                                          type' =
-                                          (Some ({ Starpath.row = 1; col = 22 },
-                                                   (Parse.Id (
-                                                      { Starpath.row = 1;
-                                                        col = 22 }, "string"))));
-                                                   value = None })
-                                                 ]
-                                          )) |}]
+         { Parse.rec' = false;
+           fields =
+           [(Parse.Decl
+               { Parse.kind = None;
+                 name_or_count =
+                 ({ Starpath.row = 1; col = 2 }, (Parse.Name "a"));
+                  type' =
+                  (Some ({ Starpath.row = 1; col = 5 },
+                           (Parse.Id ({ Starpath.row = 1; col = 5 }, "int"))));
+                           value = None });
+                         (Parse.Decl
+                            { Parse.kind = None;
+                              name_or_count =
+                              ({ Starpath.row = 1; col = 10 }, (Parse.Name "b"));
+                               type' =
+                               (Some ({ Starpath.row = 1; col = 13 },
+                                        (Parse.Id (
+                                           { Starpath.row = 1; col = 13 }, "bool"
+                                             ))));
+                                        value = None });
+                                      (Parse.Decl
+                                         { Parse.kind = None;
+                                           name_or_count =
+                                           ({ Starpath.row = 1; col = 19 },
+                                              (Parse.Name "c"));
+                                            type' =
+                                            (Some ({ Starpath.row = 1;
+                                                     col = 22 },
+                                                     (Parse.Id (
+                                                        { Starpath.row = 1;
+                                                          col = 22 }, "string"))));
+                                                     value = None })
+                                                   ]
+                                            }
+                                           )) |}]
 
 let%expect_test _ =
   dump {|(val a = 5, val b = false, mut c = "foo")|};
@@ -645,37 +676,40 @@ let%expect_test _ =
     {|
     (Parse.Prod (
        { Starpath.row = 1; col = 1 },
-         [(Parse.Decl
-             { Parse.kind =
-               (Some ({ Starpath.row = 1; col = 2 }, Parse.Val));
-                      name_or_count =
-                      ({ Starpath.row = 1; col = 6 }, (Parse.Name "a"));
-                       type' = None; value = (Some (Parse.Lit (Parse.Num 5))) });
-                      (Parse.Decl
-                         { Parse.kind =
-                           (Some ({ Starpath.row = 1; col = 13 }, Parse.Val));
-                                  name_or_count =
-                                  ({ Starpath.row = 1; col = 17 },
-                                     (Parse.Name "b"));
-                                   type' = None;
-                                   value =
-                                   (Some (Parse.Id (
-                                            { Starpath.row = 1; col = 21 },
-                                              "false")))
-                                            });
-                                   (Parse.Decl
-                                      { Parse.kind =
-                                        (Some ({ Starpath.row = 1; col = 28 },
-                                                 Parse.Mut));
-                                               name_or_count =
-                                               ({ Starpath.row = 1; col = 32 },
-                                                  (Parse.Name "c"));
-                                                type' = None;
-                                                value =
-                                                (Some (Parse.Lit
-                                                         (Parse.String "foo")))
-                                                })
-                                               ]
+         { Parse.rec' = false;
+           fields =
+           [(Parse.Decl
+               { Parse.kind =
+                 (Some ({ Starpath.row = 1; col = 2 }, Parse.Val));
+                        name_or_count =
+                        ({ Starpath.row = 1; col = 6 }, (Parse.Name "a"));
+                         type' = None; value = (Some (Parse.Lit (Parse.Num 5))) });
+                        (Parse.Decl
+                           { Parse.kind =
+                             (Some ({ Starpath.row = 1; col = 13 }, Parse.Val));
+                                    name_or_count =
+                                    ({ Starpath.row = 1; col = 17 },
+                                       (Parse.Name "b"));
+                                     type' = None;
+                                     value =
+                                     (Some (Parse.Id (
+                                              { Starpath.row = 1; col = 21 },
+                                                "false")))
+                                              });
+                                     (Parse.Decl
+                                        { Parse.kind =
+                                          (Some ({ Starpath.row = 1; col = 28 },
+                                                   Parse.Mut));
+                                                 name_or_count =
+                                                 ({ Starpath.row = 1; col = 32 },
+                                                    (Parse.Name "c"));
+                                                  type' = None;
+                                                  value =
+                                                  (Some (Parse.Lit
+                                                           (Parse.String "foo")))
+                                                  })
+                                                 ]
+                                          }
                                         )) |}]
 
 let%expect_test _ =
@@ -684,45 +718,48 @@ let%expect_test _ =
     {|
     (Parse.Prod (
        { Starpath.row = 1; col = 1 },
-         [(Parse.Decl
-             { Parse.kind =
-               (Some ({ Starpath.row = 1; col = 2 }, Parse.Val));
-                      name_or_count =
-                      ({ Starpath.row = 1; col = 6 }, (Parse.Name "a"));
-                       type' =
-                       (Some ({ Starpath.row = 1; col = 9 },
-                                (Parse.Id (
-                                   { Starpath.row = 1; col = 9 }, "int"))));
-                                value = None });
-                              (Parse.Decl
-                                 { Parse.kind =
-                                   (Some ({ Starpath.row = 1; col = 14 },
-                                            Parse.Val));
-                                          name_or_count =
-                                          ({ Starpath.row = 1; col = 18 },
-                                             (Parse.Name "b"));
-                                           type' =
-                                           (Some ({ Starpath.row = 1; col = 21 },
-                                                    (Parse.Id (
-                                                       { Starpath.row = 1;
-                                                         col = 21 }, "bool"))));
-                                                    value = None });
-                                                  (Parse.Decl
-                                                     { Parse.kind =
-                                                       (Some ({ Starpath.row = 1;
-                                                                col = 27 },
-                                                                Parse.Mut));
-                                                              name_or_count =
-                                                              ({ Starpath.row =
-                                                                 1; col = 31 },
-                                                                 (Parse.Name "c"));
-                                                               type' =
-                                                               (Some ({ Starpath.row =
+         { Parse.rec' = false;
+           fields =
+           [(Parse.Decl
+               { Parse.kind =
+                 (Some ({ Starpath.row = 1; col = 2 }, Parse.Val));
+                        name_or_count =
+                        ({ Starpath.row = 1; col = 6 }, (Parse.Name "a"));
+                         type' =
+                         (Some ({ Starpath.row = 1; col = 9 },
+                                  (Parse.Id (
+                                     { Starpath.row = 1; col = 9 }, "int"))));
+                                  value = None });
+                                (Parse.Decl
+                                   { Parse.kind =
+                                     (Some ({ Starpath.row = 1; col = 14 },
+                                              Parse.Val));
+                                            name_or_count =
+                                            ({ Starpath.row = 1; col = 18 },
+                                               (Parse.Name "b"));
+                                             type' =
+                                             (Some ({ Starpath.row = 1;
+                                                      col = 21 },
+                                                      (Parse.Id (
+                                                         { Starpath.row = 1;
+                                                           col = 21 }, "bool"))));
+                                                      value = None });
+                                                    (Parse.Decl
+                                                       { Parse.kind =
+                                                         (Some ({ Starpath.row =
+                                                                  1; col = 27 },
+                                                                  Parse.Mut));
+                                                                name_or_count =
+                                                                ({ Starpath.row =
+                                                                   1; col = 31 },
+                                                                   (Parse.Name
+                                                                      "c"));
+                                                                 type' =
+                                                                 (Some ({ Starpath.row =
                                                                         1;
                                                                         col = 34
                                                                         },
-                                                                        (
-                                                                        Parse.Id (
+                                                                        (Parse.Id (
                                                                         { Starpath.row =
                                                                         1;
                                                                         col = 34
@@ -730,9 +767,9 @@ let%expect_test _ =
                                                                         "string"
                                                                         ))));
                                                                         value =
-                                                                        None })
-                                                                      ]
-                                                               )) |}]
+                                                                        None })]
+                                                                 }
+                                                                )) |}]
 
 let%expect_test _ =
   dump {|(val a: int = 5, val b: bool = false, mut c: string = "foo")|};
@@ -740,63 +777,69 @@ let%expect_test _ =
     {|
     (Parse.Prod (
        { Starpath.row = 1; col = 1 },
-         [(Parse.Decl
-             { Parse.kind =
-               (Some ({ Starpath.row = 1; col = 2 }, Parse.Val));
-                      name_or_count =
-                      ({ Starpath.row = 1; col = 6 }, (Parse.Name "a"));
-                       type' =
-                       (Some ({ Starpath.row = 1; col = 9 },
-                                (Parse.Id (
-                                   { Starpath.row = 1; col = 9 }, "int"))));
-                                value = (Some (Parse.Lit (Parse.Num 5))) });
-                              (Parse.Decl
-                                 { Parse.kind =
-                                   (Some ({ Starpath.row = 1; col = 18 },
-                                            Parse.Val));
-                                          name_or_count =
-                                          ({ Starpath.row = 1; col = 22 },
-                                             (Parse.Name "b"));
-                                           type' =
-                                           (Some ({ Starpath.row = 1; col = 25 },
-                                                    (Parse.Id (
-                                                       { Starpath.row = 1;
-                                                         col = 25 }, "bool"))));
-                                                    value =
-                                                    (Some (Parse.Id (
-                                                             { Starpath.row = 1;
-                                                               col = 32 },
-                                                               "false")))
-                                                             });
-                                                    (Parse.Decl
-                                                       { Parse.kind =
-                                                         (Some ({ Starpath.row =
-                                                                  1; col = 39 },
-                                                                  Parse.Mut));
-                                                                name_or_count =
-                                                                ({ Starpath.row =
-                                                                   1; col = 43 },
-                                                                   (Parse.Name
-                                                                      "c"));
-                                                                 type' =
-                                                                 (Some ({ Starpath.row =
-                                                                        1;
-                                                                        col = 46
-                                                                        },
-                                                                        (Parse.Id (
+         { Parse.rec' = false;
+           fields =
+           [(Parse.Decl
+               { Parse.kind =
+                 (Some ({ Starpath.row = 1; col = 2 }, Parse.Val));
+                        name_or_count =
+                        ({ Starpath.row = 1; col = 6 }, (Parse.Name "a"));
+                         type' =
+                         (Some ({ Starpath.row = 1; col = 9 },
+                                  (Parse.Id (
+                                     { Starpath.row = 1; col = 9 }, "int"))));
+                                  value = (Some (Parse.Lit (Parse.Num 5))) });
+                                (Parse.Decl
+                                   { Parse.kind =
+                                     (Some ({ Starpath.row = 1; col = 18 },
+                                              Parse.Val));
+                                            name_or_count =
+                                            ({ Starpath.row = 1; col = 22 },
+                                               (Parse.Name "b"));
+                                             type' =
+                                             (Some ({ Starpath.row = 1;
+                                                      col = 25 },
+                                                      (Parse.Id (
+                                                         { Starpath.row = 1;
+                                                           col = 25 }, "bool"))));
+                                                      value =
+                                                      (Some (Parse.Id (
+                                                               { Starpath.row =
+                                                                 1; col = 32 },
+                                                                 "false")))
+                                                               });
+                                                      (Parse.Decl
+                                                         { Parse.kind =
+                                                           (Some ({ Starpath.row =
+                                                                    1;
+                                                                    col = 39 },
+                                                                    Parse.Mut));
+                                                                  name_or_count =
+                                                                  ({ Starpath.row =
+                                                                     1;
+                                                                     col = 43 },
+                                                                     (Parse.Name
+                                                                        "c"));
+                                                                   type' =
+                                                                   (Some (
+                                                                   { Starpath.row =
+                                                                     1;
+                                                                     col = 46 },
+                                                                     (Parse.Id (
                                                                         { Starpath.row =
                                                                         1;
                                                                         col = 46
                                                                         },
                                                                         "string"
                                                                         ))));
-                                                                        value =
-                                                                        (Some (
-                                                                        Parse.Lit
-                                                                        (Parse.String
+                                                                     value =
+                                                                     (Some (
+                                                                     Parse.Lit
+                                                                       (Parse.String
                                                                         "foo")))
-                                                                        })]
-                                                                 )) |}]
+                                                                     })
+                                                                   ] }
+                                                                  )) |}]
 
 let%expect_test _ =
   dump "{}";
@@ -875,7 +918,9 @@ let%expect_test _ =
     {|
     (Parse.ProcT (
        { Starpath.row = 1; col = 1 },
-         { Parse.args = ({ Starpath.row = 1; col = 5 }, []); return_type = None }
+         { Parse.args =
+           ({ Starpath.row = 1; col = 4 }, { Parse.rec' = false; fields = [] });
+            return_type = None }
            )) |}]
 
 let%expect_test _ =
@@ -885,40 +930,42 @@ let%expect_test _ =
     (Parse.ProcT (
        { Starpath.row = 1; col = 1 },
          { Parse.args =
-           ({ Starpath.row = 1; col = 5 },
-              [(Parse.Decl
-                  { Parse.kind =
-                    (Some ({ Starpath.row = 1; col = 6 }, Parse.Mut));
-                           name_or_count =
-                           ({ Starpath.row = 1; col = 10 }, (Parse.Name "a"));
-                            type' =
-                            (Some ({ Starpath.row = 1; col = 13 },
-                                     (Parse.Id (
-                                        { Starpath.row = 1; col = 13 }, "int"))));
-                                     value = (Some (Parse.Lit (Parse.Num 5))) });
-                                   (Parse.Decl
-                                      { Parse.kind =
-                                        (Some ({ Starpath.row = 1; col = 22 },
-                                                 Parse.Val));
-                                               name_or_count =
-                                               ({ Starpath.row = 1; col = 26 },
-                                                  (Parse.Name "b"));
-                                                type' =
-                                                (Some ({ Starpath.row = 1;
-                                                         col = 29 },
-                                                         (Parse.Id (
-                                                            { Starpath.row = 1;
-                                                              col = 29 },
-                                                              "string"))));
-                                                         value = None })
-                                                       ]);
-                                               return_type =
-                                               (Some ({ Starpath.row = 1;
-                                                        col = 38 },
-                                                        (Parse.Id (
-                                                           { Starpath.row = 1;
-                                                             col = 38 }, "int"))))
-                                                        })) |}]
+           ({ Starpath.row = 1; col = 4 },
+              { Parse.rec' = false;
+                fields =
+                [(Parse.Decl
+                    { Parse.kind =
+                      (Some ({ Starpath.row = 1; col = 6 }, Parse.Mut));
+                             name_or_count =
+                             ({ Starpath.row = 1; col = 10 }, (Parse.Name "a"));
+                              type' =
+                              (Some ({ Starpath.row = 1; col = 13 },
+                                       (Parse.Id (
+                                          { Starpath.row = 1; col = 13 }, "int"))));
+                                       value = (Some (Parse.Lit (Parse.Num 5))) });
+                                     (Parse.Decl
+                                        { Parse.kind =
+                                          (Some ({ Starpath.row = 1; col = 22 },
+                                                   Parse.Val));
+                                                 name_or_count =
+                                                 ({ Starpath.row = 1; col = 26 },
+                                                    (Parse.Name "b"));
+                                                  type' =
+                                                  (Some ({ Starpath.row = 1;
+                                                           col = 29 },
+                                                           (Parse.Id (
+                                                              { Starpath.row = 1;
+                                                                col = 29 },
+                                                                "string"))));
+                                                           value = None })
+                                                         ]
+                                                  });
+                                          return_type =
+                                          (Some ({ Starpath.row = 1; col = 38 },
+                                                   (Parse.Id (
+                                                      { Starpath.row = 1;
+                                                        col = 38 }, "int"))))
+                                                   })) |}]
 
 let%expect_test _ =
   dump "proc() {}";
@@ -926,7 +973,9 @@ let%expect_test _ =
     {|
     (Parse.Proc
        { Parse.type' =
-         { Parse.args = ({ Starpath.row = 1; col = 5 }, []); return_type = None };
+         { Parse.args =
+           ({ Starpath.row = 1; col = 4 }, { Parse.rec' = false; fields = [] });
+            return_type = None };
            body = [] }) |}]
 
 let%expect_test _ =
@@ -938,29 +987,31 @@ let%expect_test _ =
     (Parse.Proc
        { Parse.type' =
          { Parse.args =
-           ({ Starpath.row = 2; col = 7 },
-              [(Parse.Decl
-                  { Parse.kind =
-                    (Some ({ Starpath.row = 2; col = 8 }, Parse.Mut));
-                           name_or_count =
-                           ({ Starpath.row = 2; col = 12 }, (Parse.Name "a"));
-                            type' =
-                            (Some ({ Starpath.row = 2; col = 15 },
-                                     (Parse.Id (
-                                        { Starpath.row = 2; col = 15 }, "int"))));
-                                     value = (Some (Parse.Lit (Parse.Num 5))) })
-                                   ]);
-                           return_type =
-                           (Some ({ Starpath.row = 2; col = 25 },
-                                    (Parse.Id (
-                                       { Starpath.row = 2; col = 25 }, "string"))))
-                                    };
-                                  body =
-                                  [(Parse.Ret (
-                                      { Starpath.row = 2; col = 34 },
-                                        (Some (Parse.Lit (Parse.String "foo")))))
-                                        ]
-                                    }) |}]
+           ({ Starpath.row = 2; col = 6 },
+              { Parse.rec' = false;
+                fields =
+                [(Parse.Decl
+                    { Parse.kind =
+                      (Some ({ Starpath.row = 2; col = 8 }, Parse.Mut));
+                             name_or_count =
+                             ({ Starpath.row = 2; col = 12 }, (Parse.Name "a"));
+                              type' =
+                              (Some ({ Starpath.row = 2; col = 15 },
+                                       (Parse.Id (
+                                          { Starpath.row = 2; col = 15 }, "int"))));
+                                       value = (Some (Parse.Lit (Parse.Num 5))) })
+                                     ]
+                              });
+                      return_type =
+                      (Some ({ Starpath.row = 2; col = 25 },
+                               (Parse.Id (
+                                  { Starpath.row = 2; col = 25 }, "string"))))
+                               };
+                             body =
+                             [(Parse.Ret (
+                                 { Starpath.row = 2; col = 34 },
+                                   (Some (Parse.Lit (Parse.String "foo")))))]
+                               }) |}]
 
 let%expect_test _ =
   dump "{ foo() }";
@@ -971,7 +1022,8 @@ let%expect_test _ =
            (Parse.Call (
               { Starpath.row = 1; col = 3 },
                 { Parse.callee =
-                  (Parse.Id ({ Starpath.row = 1; col = 3 }, "foo")); args = [] }
+                  (Parse.Id ({ Starpath.row = 1; col = 3 }, "foo"));
+                     args = { Parse.rec' = false; fields = [] } }
                   )))
                 ]) |}]
 
@@ -987,15 +1039,22 @@ let%expect_test _ =
                 { Parse.callee =
                   (Parse.Id ({ Starpath.row = 1; col = 1 }, "foo"));
                      args =
-                     [(Parse.Value (
-                         { Starpath.row = 1; col = 6 },
-                           (Parse.Id ({ Starpath.row = 1; col = 6 }, "a"))))] }
-                         ));
+                     { Parse.rec' = false;
+                       fields =
+                       [(Parse.Value (
+                           { Starpath.row = 1; col = 6 },
+                             (Parse.Id ({ Starpath.row = 1; col = 6 }, "a"))))] }
+                         }
+                       ));
                      args =
-                     [(Parse.Value (
-                         { Starpath.row = 1; col = 10 },
-                           (Parse.Id ({ Starpath.row = 1; col = 10 }, "b"))))] }
-                         )) |}]
+                     { Parse.rec' = false;
+                       fields =
+                       [(Parse.Value (
+                           { Starpath.row = 1; col = 10 },
+                             (Parse.Id ({ Starpath.row = 1; col = 10 }, "b"))))]
+                             }
+                         }
+                       )) |}]
 
 let%expect_test _ =
   dump "foo(bar(baz))";
@@ -1006,21 +1065,28 @@ let%expect_test _ =
          { Parse.callee =
            (Parse.Id ({ Starpath.row = 1; col = 1 }, "foo"));
               args =
-              [(Parse.Value (
-                  { Starpath.row = 1; col = 5 },
-                    (Parse.Call (
-                       { Starpath.row = 1; col = 5 },
-                         { Parse.callee =
-                           (Parse.Id ({ Starpath.row = 1; col = 5 }, "bar"));
-                              args =
-                              [(Parse.Value (
-                                  { Starpath.row = 1; col = 9 },
-                                    (Parse.Id (
-                                       { Starpath.row = 1; col = 9 }, "baz"))))]
+              { Parse.rec' = false;
+                fields =
+                [(Parse.Value (
+                    { Starpath.row = 1; col = 5 },
+                      (Parse.Call (
+                         { Starpath.row = 1; col = 5 },
+                           { Parse.callee =
+                             (Parse.Id ({ Starpath.row = 1; col = 5 }, "bar"));
+                                args =
+                                { Parse.rec' = false;
+                                  fields =
+                                  [(Parse.Value (
+                                      { Starpath.row = 1; col = 9 },
+                                        (Parse.Id (
+                                           { Starpath.row = 1; col = 9 }, "baz"))
+                                             ))
+                                           ]
+                                        }
                                     }
-                                  ))
-                                ))
-                              ]
+                                  ))))
+                                ]
+                             }
                            })) |}]
 
 let%expect_test _ =
@@ -1174,10 +1240,12 @@ let%expect_test _ =
               { Parse.callee =
                 (Parse.Id ({ Starpath.row = 1; col = 1 }, "foo"));
                    args =
-                   [(Parse.Value (
-                       { Starpath.row = 1; col = 5 },
-                         (Parse.Id ({ Starpath.row = 1; col = 5 }, "bar"))))] }
-                       )),
-                     Parse.Dot,
+                   { Parse.rec' = false;
+                     fields =
+                     [(Parse.Value (
+                         { Starpath.row = 1; col = 5 },
+                           (Parse.Id ({ Starpath.row = 1; col = 5 }, "bar"))))] }
+                       }
+                     )), Parse.Dot,
                      { Starpath.row = 1; col = 10 },
                        (Parse.Id ({ Starpath.row = 1; col = 10 }, "baz"))))|}]

@@ -7,3 +7,7 @@ let rec try_map f = function
       Option.bind (f x) @@ fun y ->
       Option.bind (try_map f xs) @@ fun ys -> Some (y :: ys)
   | [] -> Some []
+
+let rec try_fold_left f init : _ -> _ option = function
+  | [] -> Some init
+  | x :: xs -> Option.bind (f init x) @@ fun y -> try_fold_left f y xs
